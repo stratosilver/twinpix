@@ -1,2 +1,2 @@
-# twinpix
+# Twin Pix
 Duplicate pictures finder
