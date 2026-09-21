@@ -5,8 +5,7 @@
 //    %WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 //  See build.bat
 //
-//  Duplicate criteria: file name (copy suffixes ignored)
-//                    + size in bytes + extension
+//  Duplicate criteria: file name + size in bytes + extension
 //  Option: content check (MD5) for confirmation.
 // =====================================================================
 
@@ -18,9 +17,9 @@ using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Windows.Forms;
 
 namespace TwinPix
@@ -91,8 +90,6 @@ namespace TwinPix
         public string Root = "";
         public string Preferred = "";
         public bool Recursive = true;
-        public bool IgnoreCopySuffix = true;
-        public bool IgnoreNumericSuffix = false;
         public bool CompareContent = false;
         public HashSet<string> Extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     }
@@ -109,44 +106,15 @@ namespace TwinPix
     // -----------------------------------------------------------------
     public static class Scanner
     {
-        static readonly Regex RxParen =
-            new Regex(@"[\s_\-]*\(\s*\d{1,4}\s*\)$", RegexOptions.Compiled);
-
-        static readonly Regex RxCopyWord =
-            new Regex(@"[\s_\-]*(copie|copy|copia|kopie|kopia|duplicata|duplicate|dup)([\s_\-]*\d{1,4})?$",
-                      RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
-        static readonly Regex RxNumeric =
-            new Regex(@"[\s_\-]+\d{1,4}$", RegexOptions.Compiled);
-
-        /// <summary>Normalized base name used as the grouping key.</summary>
-        public static string NormalizeName(string fileNameWithoutExt, ScanOptions o)
+        /// <summary>
+        /// Grouping key for a file name: the name as it is, lower-cased, since
+        /// Windows file names are case-insensitive. No suffix is stripped, so
+        /// two names must match exactly to be considered duplicates.
+        /// </summary>
+        public static string NormalizeName(string fileNameWithoutExt)
         {
-            string s = fileNameWithoutExt == null ? "" : fileNameWithoutExt.Trim();
-
-            if (o.IgnoreCopySuffix)
-            {
-                bool changed = true;
-                while (changed && s.Length > 0)
-                {
-                    changed = false;
-                    string t = RxParen.Replace(s, "");
-                    if (t != s) { s = t; changed = true; }
-                    t = RxCopyWord.Replace(s, "");
-                    if (t != s) { s = t; changed = true; }
-                    s = s.TrimEnd(' ', '_', '-', '.');
-                }
-            }
-
-            if (o.IgnoreNumericSuffix)
-            {
-                string t = RxNumeric.Replace(s, "");
-                if (t.Length > 0) s = t;
-                s = s.TrimEnd(' ', '_', '-', '.');
-            }
-
-            if (s.Length == 0) s = fileNameWithoutExt == null ? "" : fileNameWithoutExt.Trim();
-            return s.ToLowerInvariant();
+            if (fileNameWithoutExt == null) return "";
+            return fileNameWithoutExt.Trim().ToLowerInvariant();
         }
 
         public static bool IsUnder(string path, string folder)
@@ -229,7 +197,7 @@ namespace TwinPix
                 catch { res.Errors++; continue; }
 
                 string ext = (fi.Extension ?? "").ToLowerInvariant();
-                string baseName = NormalizeName(Path.GetFileNameWithoutExtension(p), o);
+                string baseName = NormalizeName(Path.GetFileNameWithoutExtension(p));
                 string key = baseName + "|" + ext + "|" + fi.Length.ToString(CultureInfo.InvariantCulture);
 
                 DupGroup g;
@@ -376,6 +344,25 @@ namespace TwinPix
         public const int ButtonHeight = 32;
         public const int SideMargin = 9;
 
+        /// <summary>
+        /// The application icon. It is embedded in the executable by build.bat
+        /// (/resource:assets\twinpix.ico); if that is missing, the icon Windows
+        /// associates with the executable is used instead.
+        /// </summary>
+        public static Icon AppIcon()
+        {
+            try
+            {
+                Assembly asm = Assembly.GetExecutingAssembly();
+                using (Stream st = asm.GetManifestResourceStream("TwinPix.twinpix.ico"))
+                    if (st != null) return new Icon(st);
+            }
+            catch { }
+            try { return Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
+            catch { }
+            return null;           // no icon available: the default one stays
+        }
+
         public static string FormatSize(long bytes)
         {
             double b = bytes;
@@ -432,6 +419,139 @@ namespace TwinPix
                 if (i > 9999) break;
             }
             return candidate;
+        }
+    }
+
+    // -----------------------------------------------------------------
+    //  Folder history, shared by every folder field and kept between runs
+    //  in %APPDATA%\TwinPix\folders.txt
+    // -----------------------------------------------------------------
+    public class FolderHistory
+    {
+        public const int MaxEntries = 12;
+
+        readonly Dictionary<string, List<string>> _map =
+            new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+        public static string FilePath
+        {
+            get
+            {
+                string dir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "TwinPix");
+                return Path.Combine(dir, "folders.txt");
+            }
+        }
+
+        public List<string> Get(string key)
+        {
+            List<string> list;
+            if (!_map.TryGetValue(key, out list))
+            {
+                list = new List<string>();
+                _map[key] = list;
+            }
+            return list;
+        }
+
+        /// <summary>Puts a folder at the top of its list, without duplicates.</summary>
+        public void Add(string key, string path)
+        {
+            if (path == null) return;
+            path = path.Trim().TrimEnd('\\', '/');   // "C:\\Photos\\" and "C:/Photos" are one entry
+            if (path.Length == 0) return;
+            // a drive root keeps its separator: "C:" alone is not "C:\"
+            if (path.Length == 2 && path[1] == ':') path += Path.DirectorySeparatorChar;
+
+            List<string> list = Get(key);
+            for (int i = list.Count - 1; i >= 0; i--)
+                if (string.Equals(list[i], path, StringComparison.OrdinalIgnoreCase))
+                    list.RemoveAt(i);
+
+            list.Insert(0, path);
+            while (list.Count > MaxEntries) list.RemoveAt(list.Count - 1);
+        }
+
+        public void Clear(string key) { Get(key).Clear(); }
+
+        public void Load()
+        {
+            _map.Clear();
+            try
+            {
+                if (!File.Exists(FilePath)) return;
+                string[] lines = File.ReadAllLines(FilePath);
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    int sep = lines[i].IndexOf('|');
+                    if (sep <= 0) continue;
+                    string key = lines[i].Substring(0, sep);
+                    string path = lines[i].Substring(sep + 1).Trim();
+                    if (path.Length == 0) continue;
+                    List<string> list = Get(key);
+                    if (list.Count < MaxEntries) list.Add(path);
+                }
+            }
+            catch { }          // a missing or unreadable history is not an error
+        }
+
+        public void Save()
+        {
+            try
+            {
+                string dir = Path.GetDirectoryName(FilePath);
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                var sb = new StringBuilder();
+                foreach (var kv in _map)
+                    for (int i = 0; i < kv.Value.Count; i++)
+                        sb.AppendLine(kv.Key + "|" + kv.Value[i]);
+                File.WriteAllText(FilePath, sb.ToString(), Encoding.UTF8);
+            }
+            catch { }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    //  Sorts the duplicate-group list on the clicked column
+    // -----------------------------------------------------------------
+    public class GroupComparer : System.Collections.IComparer
+    {
+        readonly int _column;
+        readonly bool _ascending;
+
+        public GroupComparer(int column, bool ascending)
+        {
+            _column = column;
+            _ascending = ascending;
+        }
+
+        public int Compare(object x, object y)
+        {
+            DupGroup a = ((ListViewItem)x).Tag as DupGroup;
+            DupGroup b = ((ListViewItem)y).Tag as DupGroup;
+            if (a == null || b == null) return 0;
+
+            int r;
+            switch (_column)
+            {
+                case 1: r = string.Compare(a.Extension, b.Extension, StringComparison.OrdinalIgnoreCase); break;
+                case 2: r = a.Size.CompareTo(b.Size); break;
+                case 3: r = a.Files.Count.CompareTo(b.Files.Count); break;
+                case 4: r = a.Wasted.CompareTo(b.Wasted); break;
+                case 5: r = string.Compare(KeptDir(a), KeptDir(b), StringComparison.OrdinalIgnoreCase); break;
+                default: r = string.Compare(a.BaseName, b.BaseName, StringComparison.OrdinalIgnoreCase); break;
+            }
+            // stable, predictable order for equal values
+            if (r == 0) r = string.Compare(a.BaseName + a.Extension, b.BaseName + b.Extension,
+                                           StringComparison.OrdinalIgnoreCase);
+            return _ascending ? r : -r;
+        }
+
+        static string KeptDir(DupGroup g)
+        {
+            FileEntry k = g.Kept;
+            return k == null ? "" : k.DirectoryPath;
         }
     }
 
@@ -593,21 +713,19 @@ namespace TwinPix
     // -----------------------------------------------------------------
     public class MainForm : Form
     {
-        static readonly Color AccentScan = Color.FromArgb(0, 102, 184);   // Windows blue
-        static readonly Color AccentStop = Color.FromArgb(196, 89, 17);   // cancel orange
-        static readonly Color AccentMove = Color.FromArgb(46, 125, 70);   // action green
-
         const string DefaultExtensions =
             ".jpg;.jpeg;.jpe;.jfif;.png;.gif;.bmp;.tif;.tiff;.webp;.heic;.heif;.ico;.psd;.svg;.raw;.cr2;.nef;.arw;.dng;.orf;.rw2";
 
-        TextBox _txtRoot, _txtPreferred, _txtQuarantine, _txtExt;
+        ComboBox _cboRoot, _cboPreferred, _cboQuarantine;
+        TextBox _txtExt;
         Button _btnRoot, _btnPreferred, _btnQuarantine, _btnScan;
-        CheckBox _chkRecursive, _chkCopySuffix, _chkNumSuffix, _chkContent, _chkPreserveTree, _chkApplyAll;
+        CheckBox _chkRecursive, _chkContent, _chkPreserveTree, _chkApplyAll;
         ListView _lv;
         FlowLayoutPanel _cards;
         Label _lblGroupTitle, _lblSummary;
         Button _btnMoveGroup, _btnMoveAll, _btnExport;
         Button _btnKeepPreferred, _btnKeepOldest, _btnKeepNewest, _btnKeepShortest;
+        SplitContainer _split;
         StatusStrip _status;
         ToolStripStatusLabel _statusLabel;
         ToolStripProgressBar _progress;
@@ -618,15 +736,34 @@ namespace TwinPix
         DupGroup _current;
         bool _suspend;
 
+        // Remembered folders, one list per field.
+        const string KeyScan = "scan";
+        const string KeyPreferred = "preferred";
+        const string KeyDestination = "destination";
+        readonly FolderHistory _history = new FolderHistory();
+
+        // Share of the window given to the group list when it first opens.
+        const double ListWidthRatio = 0.75;
+
+        // Sort state of the duplicate-group list.
+        int _sortColumn = 4;              // Reclaimable
+        bool _sortAscending;              // largest first
+
         public MainForm()
         {
             Text = "TwinPix - duplicate images";
             Font = Util.UiFont;
+            Icon appIcon = Util.AppIcon();
+            if (appIcon != null) Icon = appIcon;
             Width = 1240;
             Height = 840;
             StartPosition = FormStartPosition.CenterScreen;
             MinimumSize = new Size(960, 640);
+            _history.Load();
             BuildUi();
+            FillCombo(_cboRoot, KeyScan);
+            FillCombo(_cboPreferred, KeyPreferred);
+            FillCombo(_cboQuarantine, KeyDestination);
         }
 
         // ---------------------- User interface ------------------------
@@ -634,6 +771,7 @@ namespace TwinPix
         {
             // ----- centre area (added first: it gets the remaining space)
             var split = new SplitContainer();
+            _split = split;
             split.Dock = DockStyle.Fill;
             split.Orientation = Orientation.Vertical;
             split.SplitterWidth = 6;
@@ -647,33 +785,18 @@ namespace TwinPix
             _lv.MultiSelect = false;
             _lv.HideSelection = false;
             _lv.GridLines = true;
-            _lv.Columns.Add("Name", 200);
-            _lv.Columns.Add("Ext", 60);
-            _lv.Columns.Add("Size", 90, HorizontalAlignment.Right);
-            _lv.Columns.Add("Copies", 70, HorizontalAlignment.Right);
-            _lv.Columns.Add("Reclaimable", 110, HorizontalAlignment.Right);
+            // a little extra width so the "  ^" / "  v" sort marker always fits
+            _lv.Columns.Add("Name", 210);
+            _lv.Columns.Add("Ext", 70);
+            _lv.Columns.Add("Size", 100, HorizontalAlignment.Right);
+            _lv.Columns.Add("Copies", 85, HorizontalAlignment.Right);
+            _lv.Columns.Add("Reclaimable", 130, HorizontalAlignment.Right);
             _lv.Columns.Add("Keeping in", 260);
             _lv.SelectedIndexChanged += LvSelectionChanged;
+            _lv.ColumnClick += LvColumnClick;
             leftPanel.Controls.Add(_lv);
-            var lblLeft = new Label();
-            lblLeft.Dock = DockStyle.Top;
-            lblLeft.Height = 26;
-            lblLeft.Padding = new Padding(0, 6, 0, 0);
-            lblLeft.Text = "Duplicate groups";
-            lblLeft.Font = Util.UiFontBold;
-            leftPanel.Controls.Add(lblLeft);
-            split.Panel1.Controls.Add(leftPanel);
 
-            var rightPanel = new Panel();
-            rightPanel.Dock = DockStyle.Fill;
-
-            _cards = new FlowLayoutPanel();
-            _cards.Dock = DockStyle.Fill;
-            _cards.AutoScroll = true;
-            _cards.BackColor = Color.FromArgb(250, 250, 250);
-            _cards.Padding = new Padding(6);
-            rightPanel.Controls.Add(_cards);
-
+            // Selection buttons sit right above the group list they act on.
             var toolbar = new FlowLayoutPanel();
             toolbar.Dock = DockStyle.Top;
             toolbar.AutoSize = true;
@@ -681,7 +804,7 @@ namespace TwinPix
             toolbar.WrapContents = true;
             toolbar.Padding = new Padding(2);
             var lblKeep = new Label();
-            lblKeep.Text = "Auto-select:";
+            lblKeep.Text = "Keep automatically:";
             lblKeep.AutoSize = true;
             lblKeep.MinimumSize = new Size(0, Util.RowHeight);
             lblKeep.TextAlign = ContentAlignment.MiddleLeft;
@@ -697,7 +820,27 @@ namespace TwinPix
             toolbar.Controls.Add(_btnKeepShortest);
             _chkApplyAll = MakeCheck("all groups", true);
             toolbar.Controls.Add(_chkApplyAll);
-            rightPanel.Controls.Add(toolbar);
+            leftPanel.Controls.Add(toolbar);
+
+            var lblLeft = new Label();
+            lblLeft.Dock = DockStyle.Top;
+            lblLeft.Height = 26;
+            lblLeft.Padding = new Padding(0, 6, 0, 0);
+            lblLeft.Text = "Duplicate groups";
+            lblLeft.Font = Util.UiFontBold;
+            leftPanel.Controls.Add(lblLeft);      // added last: docks above the toolbar
+            split.Panel1.Controls.Add(leftPanel);
+
+            var rightPanel = new Panel();
+            rightPanel.Dock = DockStyle.Fill;
+
+            _cards = new FlowLayoutPanel();
+            _cards.Dock = DockStyle.Fill;
+            _cards.AutoScroll = true;
+            _cards.BackColor = Color.FromArgb(250, 250, 250);
+            _cards.Padding = new Padding(6);
+            rightPanel.Controls.Add(_cards);
+
 
             _lblGroupTitle = new Label();
             _lblGroupTitle.Dock = DockStyle.Top;
@@ -731,24 +874,24 @@ namespace TwinPix
             top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
 
             top.Controls.Add(MakeLabel("Folder to scan:"), 0, 0);
-            _txtRoot = MakeText();
-            top.Controls.Add(_txtRoot, 1, 0);
-            _btnRoot = MakeButton("Browse...", 88, delegate { Browse(_txtRoot, "Folder to scan"); });
+            _cboRoot = MakeCombo(KeyScan);
+            _tip.SetToolTip(_cboRoot, "Recently used folders are kept in the drop-down list.");
+            top.Controls.Add(_cboRoot, 1, 0);
+            _btnRoot = MakeButton("Browse...", 88, delegate { Browse(_cboRoot, "Folder to scan", KeyScan); });
             top.Controls.Add(_btnRoot, 2, 0);
             _btnScan = MakeButton("SCAN", 150, delegate { StartScan(); });
-            _btnScan.Height = Util.ButtonHeight + 4;
-            HighlightButton(_btnScan, AccentScan);
-            AcceptButton = _btnScan;
+            EmphasizeButton(_btnScan);
+            AcceptButton = _btnScan;         // Windows outlines the default button
             top.Controls.Add(_btnScan, 3, 0);
 
             top.Controls.Add(MakeLabel("Preferred folder:"), 0, 1);
-            _txtPreferred = MakeText();
-            _tip.SetToolTip(_txtPreferred,
+            _cboPreferred = MakeCombo(KeyPreferred);
+            _tip.SetToolTip(_cboPreferred,
                 "Images inside this folder (and its subfolders) are kept by default.");
-            top.Controls.Add(_txtPreferred, 1, 1);
-            _btnPreferred = MakeButton("Browse...", 88, delegate { Browse(_txtPreferred, "Preferred folder"); });
+            top.Controls.Add(_cboPreferred, 1, 1);
+            _btnPreferred = MakeButton("Browse...", 88, delegate { Browse(_cboPreferred, "Preferred folder", KeyPreferred); });
             top.Controls.Add(_btnPreferred, 2, 1);
-            var btnClearPref = MakeButton("Clear", 142, delegate { _txtPreferred.Text = ""; });
+            var btnClearPref = MakeButton("Clear", 142, delegate { _cboPreferred.Text = ""; });
             top.Controls.Add(btnClearPref, 3, 1);
 
             var opts = new FlowLayoutPanel();
@@ -756,13 +899,9 @@ namespace TwinPix
             opts.WrapContents = true;
             opts.Dock = DockStyle.Fill;
             _chkRecursive = MakeCheck("Include subfolders", true);
-            _chkCopySuffix = MakeCheck("Ignore copy suffixes: (1), - Copy, copy 2", true);
-            _chkNumSuffix = MakeCheck("Also ignore _1 / -1", false);
             _chkContent = MakeCheck("Check content (MD5)", false);
             _tip.SetToolTip(_chkContent, "Slower: confirms the files really are identical.");
             opts.Controls.Add(_chkRecursive);
-            opts.Controls.Add(_chkCopySuffix);
-            opts.Controls.Add(_chkNumSuffix);
             opts.Controls.Add(_chkContent);
             top.Controls.Add(opts, 0, 2);
             top.SetColumnSpan(opts, 4);
@@ -788,9 +927,10 @@ namespace TwinPix
             bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 240));
 
             bottom.Controls.Add(MakeLabel("Move duplicates to:"), 0, 0);
-            _txtQuarantine = MakeText();
-            bottom.Controls.Add(_txtQuarantine, 1, 0);
-            _btnQuarantine = MakeButton("Browse...", 88, delegate { Browse(_txtQuarantine, "Destination folder for duplicates"); });
+            _cboQuarantine = MakeCombo(KeyDestination);
+            _tip.SetToolTip(_cboQuarantine, "Recently used folders are kept in the drop-down list.");
+            bottom.Controls.Add(_cboQuarantine, 1, 0);
+            _btnQuarantine = MakeButton("Browse...", 88, delegate { Browse(_cboQuarantine, "Destination folder for duplicates", KeyDestination); });
             bottom.Controls.Add(_btnQuarantine, 2, 0);
             _chkPreserveTree = MakeCheck("Keep folder structure", true);
             bottom.Controls.Add(_chkPreserveTree, 3, 0);
@@ -801,7 +941,7 @@ namespace TwinPix
             actions.WrapContents = true;
             _btnMoveGroup = MakeButton("Move duplicates in group", 235, delegate { MoveSelected(false); });
             _btnMoveAll = MakeButton("Move ALL duplicates", 215, delegate { MoveSelected(true); });
-            HighlightButton(_btnMoveAll, AccentMove);
+            EmphasizeButton(_btnMoveAll);
             _btnExport = MakeButton("Export CSV", 145, delegate { ExportCsv(); });
             actions.Controls.Add(_btnMoveGroup);
             actions.Controls.Add(_btnMoveAll);
@@ -829,8 +969,7 @@ namespace TwinPix
             Controls.Add(_status);
 
             split.Panel1MinSize = 320;
-            split.Panel2MinSize = 380;
-            split.SplitterDistance = 560;
+            split.Panel2MinSize = 244;       // one thumbnail card plus its scrollbar
             EnableActions(false);
         }
 
@@ -851,6 +990,46 @@ namespace TwinPix
             t.Dock = DockStyle.Fill;
             t.Margin = new Padding(3, 5, 3, 5);
             return t;
+        }
+
+        /// <summary>Editable folder field whose drop-down keeps the folders used before.</summary>
+        ComboBox MakeCombo(string historyKey)
+        {
+            var c = new ComboBox();
+            c.Dock = DockStyle.Fill;
+            c.Margin = new Padding(3, 5, 3, 5);
+            c.DropDownStyle = ComboBoxStyle.DropDown;
+            c.AutoCompleteMode = AutoCompleteMode.SuggestAppend;
+            c.AutoCompleteSource = AutoCompleteSource.FileSystemDirectories;
+            c.MaxDropDownItems = FolderHistory.MaxEntries;
+
+            var menu = new ContextMenuStrip();
+            menu.Items.Add("Clear this list", null, delegate
+            {
+                _history.Clear(historyKey);
+                _history.Save();
+                FillCombo(c, historyKey);
+            });
+            c.ContextMenuStrip = menu;
+            return c;
+        }
+
+        /// <summary>Loads a field's remembered folders, keeping what is typed in it.</summary>
+        void FillCombo(ComboBox c, string key)
+        {
+            string current = c.Text;
+            c.Items.Clear();
+            List<string> list = _history.Get(key);
+            for (int i = 0; i < list.Count; i++) c.Items.Add(list[i]);
+            c.Text = current.Length > 0 ? current : (list.Count > 0 ? list[0] : "");
+        }
+
+        /// <summary>Moves the field's current folder to the top of its history.</summary>
+        void RememberFolder(ComboBox c, string key)
+        {
+            _history.Add(key, c.Text);
+            _history.Save();
+            FillCombo(c, key);
         }
 
         Button MakeButton(string text, int width, EventHandler onClick)
@@ -879,29 +1058,28 @@ namespace TwinPix
             return c;
         }
 
-        /// <summary>Highlights a primary button with an accent colour.</summary>
-        void HighlightButton(Button b, Color back)
+        /// <summary>
+        /// Marks a primary button. A custom BackColor would make Windows drop
+        /// the visual-style rendering and draw a square-cornered classic button,
+        /// so the button is left untouched apart from its bold label. SCAN is
+        /// also the form's default button, which Windows outlines by itself.
+        /// </summary>
+        static void EmphasizeButton(Button b)
         {
-            b.FlatStyle = FlatStyle.Flat;
-            b.BackColor = back;
-            b.ForeColor = Color.White;
-            b.UseVisualStyleBackColor = false;
             b.Font = Util.UiFontBold;
-            b.FlatAppearance.BorderSize = 1;
-            b.FlatAppearance.BorderColor = ControlPaint.Dark(back, 0.1f);
-            b.FlatAppearance.MouseOverBackColor = ControlPaint.Light(back, 0.2f);
-            b.FlatAppearance.MouseDownBackColor = ControlPaint.Dark(back, 0.05f);
         }
 
-        void Browse(TextBox target, string description)
+        void Browse(ComboBox target, string description, string historyKey)
         {
             using (var dlg = new FolderBrowserDialog())
             {
                 dlg.Description = description;
                 dlg.ShowNewFolderButton = true;
                 if (Directory.Exists(target.Text)) dlg.SelectedPath = target.Text;
-                else if (Directory.Exists(_txtRoot.Text)) dlg.SelectedPath = _txtRoot.Text;
-                if (dlg.ShowDialog(this) == DialogResult.OK) target.Text = dlg.SelectedPath;
+                else if (Directory.Exists(_cboRoot.Text)) dlg.SelectedPath = _cboRoot.Text;
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                target.Text = dlg.SelectedPath;
+                RememberFolder(target, historyKey);
             }
         }
 
@@ -909,8 +1087,6 @@ namespace TwinPix
         {
             _btnMoveGroup.Enabled = on;
             _btnMoveAll.Enabled = on;
-            _btnMoveAll.BackColor = on ? AccentMove : SystemColors.ControlDark;
-            _btnMoveAll.FlatAppearance.BorderColor = ControlPaint.Dark(_btnMoveAll.BackColor, 0.1f);
             _btnExport.Enabled = on;
             _btnKeepPreferred.Enabled = on;
             _btnKeepOldest.Enabled = on;
@@ -928,7 +1104,7 @@ namespace TwinPix
                 return;
             }
 
-            string root = _txtRoot.Text.Trim();
+            string root = _cboRoot.Text.Trim();
             if (!Directory.Exists(root))
             {
                 MessageBox.Show(this, "Choose a valid folder to scan.", "TwinPix",
@@ -936,7 +1112,7 @@ namespace TwinPix
                 return;
             }
 
-            string pref = _txtPreferred.Text.Trim();
+            string pref = _cboPreferred.Text.Trim();
             if (pref.Length > 0 && !Directory.Exists(pref))
             {
                 MessageBox.Show(this, "The preferred folder does not exist.", "TwinPix",
@@ -948,8 +1124,6 @@ namespace TwinPix
             o.Root = root;
             o.Preferred = pref;
             o.Recursive = _chkRecursive.Checked;
-            o.IgnoreCopySuffix = _chkCopySuffix.Checked;
-            o.IgnoreNumericSuffix = _chkNumSuffix.Checked;
             o.CompareContent = _chkContent.Checked;
             foreach (string raw in _txtExt.Text.Split(new char[] { ';', ',', ' ' },
                                                       StringSplitOptions.RemoveEmptyEntries))
@@ -966,9 +1140,11 @@ namespace TwinPix
                 return;
             }
 
+            RememberFolder(_cboRoot, KeyScan);
+            if (pref.Length > 0) RememberFolder(_cboPreferred, KeyPreferred);
+
             ClearResults();
             _btnScan.Text = "CANCEL";
-            HighlightButton(_btnScan, AccentStop);
             _progress.Visible = true;
             _statusLabel.Text = "Scanning...";
             Cursor = Cursors.AppStarting;
@@ -989,7 +1165,6 @@ namespace TwinPix
                 Cursor = Cursors.Default;
                 _progress.Visible = false;
                 _btnScan.Text = "SCAN";
-                HighlightButton(_btnScan, AccentScan);
 
                 if (e.Error != null)
                 {
@@ -1040,6 +1215,7 @@ namespace TwinPix
         void FillGroups()
         {
             _lv.BeginUpdate();
+            _lv.ListViewItemSorter = null;      // one sort pass at the end, not one per row
             _lv.Items.Clear();
             foreach (var g in _groups)
             {
@@ -1053,6 +1229,7 @@ namespace TwinPix
                 _lv.Items.Add(it);
             }
             _lv.EndUpdate();
+            ApplySort();
             UpdateSummary();
             if (_lv.Items.Count > 0) _lv.Items[0].Selected = true;
         }
@@ -1072,6 +1249,36 @@ namespace TwinPix
                              + " duplicate(s) - " + Util.FormatSize(wasted) + " reclaimable";
         }
 
+        /// <summary>A click on a header sorts by that column, a second click reverses it.</summary>
+        void LvColumnClick(object sender, ColumnClickEventArgs e)
+        {
+            if (e.Column == _sortColumn)
+            {
+                _sortAscending = !_sortAscending;
+            }
+            else
+            {
+                _sortColumn = e.Column;
+                // text columns read best A to Z, numbers largest first
+                _sortAscending = (e.Column == 0 || e.Column == 1 || e.Column == 5);
+            }
+            ApplySort();
+        }
+
+        void ApplySort()
+        {
+            _lv.ListViewItemSorter = new GroupComparer(_sortColumn, _sortAscending);
+            _lv.Sort();
+            for (int i = 0; i < _lv.Columns.Count; i++)
+            {
+                string t = _lv.Columns[i].Text;
+                int marker = t.IndexOf("  ");
+                if (marker > 0) t = t.Substring(0, marker);
+                if (i == _sortColumn) t += _sortAscending ? "  ^" : "  v";
+                _lv.Columns[i].Text = t;
+            }
+        }
+
         void LvSelectionChanged(object sender, EventArgs e)
         {
             if (_lv.SelectedItems.Count == 0) { _current = null; ClearCards(); return; }
@@ -1087,9 +1294,11 @@ namespace TwinPix
                 _lblGroupTitle.Text = "No group selected";
                 return;
             }
-            _lblGroupTitle.Text = "Group: " + g.BaseName + g.Extension + "  -  "
-                                + Util.FormatSize(g.Size) + "  -  " + g.Files.Count + " files"
-                                + "   (click the image to keep)";
+            // the panel is narrow by default, so the title stays short
+            _lblGroupTitle.Text = g.BaseName + g.Extension + "  -  " + g.Files.Count + " files";
+            _tip.SetToolTip(_lblGroupTitle, g.BaseName + g.Extension + "  -  "
+                            + Util.FormatSize(g.Size) + "  -  " + g.Files.Count + " files"
+                            + "\r\nClick an image to mark it as the one to keep.");
             _cards.SuspendLayout();
             _suspend = true;
             foreach (var f in g.Files)
@@ -1144,6 +1353,7 @@ namespace TwinPix
                     var g = it.Tag as DupGroup;
                     if (g != null) it.SubItems[5].Text = KeptText(g);
                 }
+                if (_sortColumn == 5) _lv.Sort();
             }
             else if (_current != null)
             {
@@ -1167,7 +1377,7 @@ namespace TwinPix
                 return;
             }
 
-            string dest = _txtQuarantine.Text.Trim();
+            string dest = _cboQuarantine.Text.Trim();
             if (dest.Length == 0)
             {
                 MessageBox.Show(this, "Enter the folder the duplicates should be moved to.", "TwinPix",
@@ -1185,7 +1395,9 @@ namespace TwinPix
                 return;
             }
 
-            string root = _txtRoot.Text.Trim();
+            RememberFolder(_cboQuarantine, KeyDestination);
+
+            string root = _cboRoot.Text.Trim();
             if (Scanner.IsUnder(dest, root))
             {
                 var r = MessageBox.Show(this,
@@ -1324,9 +1536,24 @@ namespace TwinPix
             return s;
         }
 
+        /// <summary>The group list gets three quarters of the window by default.</summary>
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            int wanted = (int)(_split.Width * ListWidthRatio);
+            int max = _split.Width - _split.SplitterWidth - _split.Panel2MinSize;
+            if (wanted > max) wanted = max;
+            if (wanted < _split.Panel1MinSize) wanted = _split.Panel1MinSize;
+            _split.SplitterDistance = wanted;
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             if (_worker != null && _worker.IsBusy) _worker.CancelAsync();
+            _history.Add(KeyScan, _cboRoot.Text);
+            _history.Add(KeyPreferred, _cboPreferred.Text);
+            _history.Add(KeyDestination, _cboQuarantine.Text);
+            _history.Save();
             base.OnFormClosing(e);
         }
     }

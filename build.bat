@@ -28,8 +28,19 @@ if not defined CSC (
 echo Compiler: %CSC%
 echo.
 
+rem Application icon: used for the executable itself and embedded as a
+rem resource so the window and the taskbar show it too. Optional.
+set "ICON=%~dp0assets\twinpix.ico"
+set "ICONOPT="
+if exist "%ICON%" (
+  set ICONOPT=/win32icon:"%ICON%" /resource:"%ICON%",TwinPix.twinpix.ico
+) else (
+  echo [WARN] assets\twinpix.ico not found - building without an icon.
+)
+
 "%CSC%" /nologo /target:winexe /platform:anycpu /optimize+ /warn:4 ^
   /out:"%~dp0TwinPix.exe" ^
+  %ICONOPT% ^
   /reference:System.dll ^
   /reference:System.Core.dll ^
   /reference:System.Drawing.dll ^
