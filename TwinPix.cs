@@ -18,6 +18,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Windows.Forms;
@@ -397,13 +398,21 @@ namespace TwinPix
         public static void OpenFile(string path)
         {
             try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
-            catch (Exception ex) { MessageBox.Show("Cannot open the file:\r\n" + ex.Message); }
+            catch (Exception ex)
+            {
+                Native.Show(null, "TwinPix", "The file could not be opened", ex.Message,
+                            MessageBoxButtons.OK, Native.DialogIcon.Error);
+            }
         }
 
         public static void ShowInExplorer(string path)
         {
             try { Process.Start("explorer.exe", "/select,\"" + path + "\""); }
-            catch (Exception ex) { MessageBox.Show("Cannot open Explorer:\r\n" + ex.Message); }
+            catch (Exception ex)
+            {
+                Native.Show(null, "TwinPix", "Explorer could not be opened", ex.Message,
+                            MessageBoxButtons.OK, Native.DialogIcon.Error);
+            }
         }
 
         public static string UniqueDestination(string dir, string fileName)
@@ -419,6 +428,223 @@ namespace TwinPix
                 if (i > 9999) break;
             }
             return candidate;
+        }
+    }
+
+    // -----------------------------------------------------------------
+    //  Thin wrappers over the Win32 controls that WinForms does not
+    //  expose. Every helper is optional: off Windows, or where the
+    //  feature is missing, it quietly does nothing and the application
+    //  keeps the framework's default appearance.
+    // -----------------------------------------------------------------
+    public static class Native
+    {
+        public static bool IsWindows
+        {
+            get
+            {
+                PlatformID p = Environment.OSVersion.Platform;
+                return p == PlatformID.Win32NT || p == PlatformID.Win32Windows;
+            }
+        }
+
+        // ---- list view -------------------------------------------------
+        const int LVM_FIRST = 0x1000;
+        const int LVM_GETHEADER = LVM_FIRST + 31;
+        const int LVM_SETEXTENDEDLISTVIEWSTYLE = LVM_FIRST + 54;
+        const int LVS_EX_DOUBLEBUFFER = 0x00010000;
+
+        const int HDM_FIRST = 0x1200;
+        const int HDM_GETITEM = HDM_FIRST + 11;
+        const int HDM_SETITEM = HDM_FIRST + 12;
+        const int HDI_FORMAT = 0x0004;
+        const int HDF_SORTUP = 0x0400;
+        const int HDF_SORTDOWN = 0x0200;
+
+        // ---- edit / combo ----------------------------------------------
+        const int EM_SETCUEBANNER = 0x1501;
+        const int CB_SETCUEBANNER = 0x1703;
+
+        // ---- shell ------------------------------------------------------
+        const uint SHGFI_ICON = 0x000000100;
+        const uint SHGFI_SMALLICON = 0x000000001;
+        const uint SHGFI_USEFILEATTRIBUTES = 0x000000010;
+        const uint FILE_ATTRIBUTE_NORMAL = 0x00000080;
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct HDITEM
+        {
+            public int mask;
+            public int cxy;
+            public IntPtr pszText;
+            public IntPtr hbm;
+            public int cchTextMax;
+            public int fmt;
+            public IntPtr lParam;
+            public int iImage;
+            public int iOrder;
+            public int type;
+            public IntPtr pvFilter;
+            public int state;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct SHFILEINFO
+        {
+            public IntPtr hIcon;
+            public int iIcon;
+            public uint dwAttributes;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szDisplayName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)] public string szTypeName;
+        }
+
+        [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+        static extern int SetWindowTheme(IntPtr hWnd, string subAppName, string subIdList);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, string lParam);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, ref HDITEM lParam);
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        static extern IntPtr SHGetFileInfo(string path, uint fileAttributes, ref SHFILEINFO psfi,
+                                           uint cbFileInfo, uint flags);
+
+        [DllImport("user32.dll")]
+        static extern bool DestroyIcon(IntPtr hIcon);
+
+        [DllImport("comctl32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern int TaskDialog(IntPtr hwndParent, IntPtr hInstance, string title,
+                                     string mainInstruction, string content,
+                                     int commonButtons, IntPtr icon, out int pressedButton);
+
+        /// <summary>Gives a control the Explorer look: subtle hover, themed header.</summary>
+        public static void UseExplorerTheme(Control c)
+        {
+            if (!IsWindows || c == null || !c.IsHandleCreated) return;
+            try { SetWindowTheme(c.Handle, "Explorer", null); }
+            catch { }
+        }
+
+        /// <summary>Native double buffering: no flicker while scrolling.</summary>
+        public static void EnableDoubleBuffer(ListView lv)
+        {
+            if (!IsWindows || lv == null || !lv.IsHandleCreated) return;
+            try
+            {
+                SendMessage(lv.Handle, LVM_SETEXTENDEDLISTVIEWSTYLE,
+                            (IntPtr)LVS_EX_DOUBLEBUFFER, (IntPtr)LVS_EX_DOUBLEBUFFER);
+            }
+            catch { }
+        }
+
+        /// <summary>Draws the sort arrow in the column header itself.</summary>
+        public static void SetSortArrow(ListView lv, int column, bool ascending)
+        {
+            if (!IsWindows || lv == null || !lv.IsHandleCreated) return;
+            try
+            {
+                IntPtr header = SendMessage(lv.Handle, LVM_GETHEADER, IntPtr.Zero, IntPtr.Zero);
+                if (header == IntPtr.Zero) return;
+                for (int i = 0; i < lv.Columns.Count; i++)
+                {
+                    var item = new HDITEM();
+                    item.mask = HDI_FORMAT;
+                    SendMessage(header, HDM_GETITEM, (IntPtr)i, ref item);
+                    item.fmt &= ~(HDF_SORTUP | HDF_SORTDOWN);
+                    if (i == column) item.fmt |= ascending ? HDF_SORTUP : HDF_SORTDOWN;
+                    SendMessage(header, HDM_SETITEM, (IntPtr)i, ref item);
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>Grey prompt shown inside an empty field.</summary>
+        public static void SetCueBanner(Control c, string text)
+        {
+            if (!IsWindows || c == null || !c.IsHandleCreated) return;
+            try
+            {
+                if (c is ComboBox) SendMessage(c.Handle, CB_SETCUEBANNER, IntPtr.Zero, text);
+                else if (c is TextBox) SendMessage(c.Handle, EM_SETCUEBANNER, IntPtr.Zero, text);
+            }
+            catch { }
+        }
+
+        /// <summary>The icon the shell associates with a file extension.</summary>
+        public static Icon FileTypeIcon(string extension)
+        {
+            if (!IsWindows || string.IsNullOrEmpty(extension)) return null;
+            try
+            {
+                var info = new SHFILEINFO();
+                IntPtr r = SHGetFileInfo("file" + extension, FILE_ATTRIBUTE_NORMAL, ref info,
+                                         (uint)Marshal.SizeOf(typeof(SHFILEINFO)),
+                                         SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
+                if (r == IntPtr.Zero || info.hIcon == IntPtr.Zero) return null;
+                Icon copy = (Icon)Icon.FromHandle(info.hIcon).Clone();
+                DestroyIcon(info.hIcon);
+                return copy;
+            }
+            catch { return null; }
+        }
+
+        public enum DialogIcon { None, Information, Warning, Error }
+
+        /// <summary>
+        /// Vista task dialog: large main instruction, explanatory body, standard
+        /// buttons. Falls back to a message box where comctl32 v6 is missing.
+        /// </summary>
+        public static DialogResult Show(IWin32Window owner, string title, string instruction,
+                                        string content, MessageBoxButtons buttons, DialogIcon icon)
+        {
+            if (IsWindows)
+            {
+                try
+                {
+                    int common;
+                    switch (buttons)
+                    {
+                        case MessageBoxButtons.OKCancel: common = 0x0001 | 0x0008; break;
+                        case MessageBoxButtons.YesNo: common = 0x0002 | 0x0004; break;
+                        case MessageBoxButtons.YesNoCancel: common = 0x0002 | 0x0004 | 0x0008; break;
+                        default: common = 0x0001; break;
+                    }
+                    IntPtr hIcon = IntPtr.Zero;
+                    if (icon == DialogIcon.Warning) hIcon = new IntPtr(65535);
+                    else if (icon == DialogIcon.Error) hIcon = new IntPtr(65534);
+                    else if (icon == DialogIcon.Information) hIcon = new IntPtr(65533);
+
+                    int pressed;
+                    IntPtr parent = owner == null ? IntPtr.Zero : owner.Handle;
+                    int hr = TaskDialog(parent, IntPtr.Zero, title, instruction, content,
+                                        common, hIcon, out pressed);
+                    if (hr == 0)
+                    {
+                        switch (pressed)
+                        {
+                            case 1: return DialogResult.OK;
+                            case 2: return DialogResult.Cancel;
+                            case 6: return DialogResult.Yes;
+                            case 7: return DialogResult.No;
+                            default: return DialogResult.OK;
+                        }
+                    }
+                }
+                catch { }      // older comctl32: fall through to the message box
+            }
+
+            string body = string.IsNullOrEmpty(content) ? instruction
+                                                        : instruction + "\r\n\r\n" + content;
+            MessageBoxIcon mbi = MessageBoxIcon.None;
+            if (icon == DialogIcon.Warning) mbi = MessageBoxIcon.Warning;
+            else if (icon == DialogIcon.Error) mbi = MessageBoxIcon.Error;
+            else if (icon == DialogIcon.Information) mbi = MessageBoxIcon.Information;
+            return MessageBox.Show(owner, body, title, buttons, mbi);
         }
     }
 
@@ -474,6 +700,23 @@ namespace TwinPix
         }
 
         public void Clear(string key) { Get(key).Clear(); }
+
+        /// <summary>
+        /// Single-value entries stored in the same file, verbatim: the window
+        /// placement uses one. Unlike Add(), nothing is normalized here.
+        /// </summary>
+        public void SetValue(string key, string value)
+        {
+            List<string> list = Get(key);
+            list.Clear();
+            if (!string.IsNullOrEmpty(value)) list.Add(value);
+        }
+
+        public string GetValue(string key)
+        {
+            List<string> list = Get(key);
+            return list.Count > 0 ? list[0] : null;
+        }
 
         public void Load()
         {
@@ -719,15 +962,23 @@ namespace TwinPix
         ComboBox _cboRoot, _cboPreferred, _cboQuarantine;
         TextBox _txtExt;
         Button _btnRoot, _btnPreferred, _btnQuarantine, _btnScan;
-        CheckBox _chkRecursive, _chkContent, _chkPreserveTree, _chkApplyAll;
+        CheckBox _chkRecursive, _chkContent, _chkPreserveTree;
         ListView _lv;
+        ImageList _fileIcons;
         FlowLayoutPanel _cards;
-        Label _lblGroupTitle, _lblSummary;
-        Button _btnMoveGroup, _btnMoveAll, _btnExport;
-        Button _btnKeepPreferred, _btnKeepOldest, _btnKeepNewest, _btnKeepShortest;
+        Label _lblGroupTitle;
         SplitContainer _split;
+
+        MenuStrip _menu;
+        ToolStripMenuItem _miScan, _miExport, _miMoveGroup, _miMoveAll,
+                          _miKeepPreferred, _miKeepOldest, _miKeepNewest, _miKeepShortest;
+        ToolStrip _toolbar, _listBar;
+        ToolStripButton _tsScan, _tsMoveGroup, _tsMoveAll, _tsExport,
+                        _tsKeepPreferred, _tsKeepOldest, _tsKeepNewest, _tsKeepShortest,
+                        _tsApplyAll;
+
         StatusStrip _status;
-        ToolStripStatusLabel _statusLabel;
+        ToolStripStatusLabel _statusLabel, _paneGroups, _paneDuplicates, _paneReclaimable;
         ToolStripProgressBar _progress;
         ToolTip _tip = new ToolTip();
 
@@ -740,6 +991,8 @@ namespace TwinPix
         const string KeyScan = "scan";
         const string KeyPreferred = "preferred";
         const string KeyDestination = "destination";
+        const string KeyWindow = "window";
+        const string AppVersion = "1.0";
         readonly FolderHistory _history = new FolderHistory();
 
         // Share of the window given to the group list when it first opens.
@@ -764,11 +1017,14 @@ namespace TwinPix
             FillCombo(_cboRoot, KeyScan);
             FillCombo(_cboPreferred, KeyPreferred);
             FillCombo(_cboQuarantine, KeyDestination);
+            RestorePlacement();
         }
 
         // ---------------------- User interface ------------------------
         void BuildUi()
         {
+            ToolStripManager.RenderMode = ToolStripManagerRenderMode.System;
+
             // ----- centre area (added first: it gets the remaining space)
             var split = new SplitContainer();
             _split = split;
@@ -776,61 +1032,67 @@ namespace TwinPix
             split.Orientation = Orientation.Vertical;
             split.SplitterWidth = 6;
 
+            // --- left half: the list of duplicate groups
             var leftPanel = new Panel();
             leftPanel.Dock = DockStyle.Fill;
+
             _lv = new ListView();
             _lv.Dock = DockStyle.Fill;
             _lv.View = View.Details;
             _lv.FullRowSelect = true;
             _lv.MultiSelect = false;
             _lv.HideSelection = false;
-            _lv.GridLines = true;
-            // a little extra width so the "  ^" / "  v" sort marker always fits
-            _lv.Columns.Add("Name", 210);
+            _lv.GridLines = false;           // the Explorer theme draws its own rows
+            _lv.Columns.Add("Name", 230);
             _lv.Columns.Add("Ext", 70);
             _lv.Columns.Add("Size", 100, HorizontalAlignment.Right);
-            _lv.Columns.Add("Copies", 85, HorizontalAlignment.Right);
-            _lv.Columns.Add("Reclaimable", 130, HorizontalAlignment.Right);
+            _lv.Columns.Add("Copies", 80, HorizontalAlignment.Right);
+            _lv.Columns.Add("Reclaimable", 120, HorizontalAlignment.Right);
             _lv.Columns.Add("Keeping in", 260);
             _lv.SelectedIndexChanged += LvSelectionChanged;
             _lv.ColumnClick += LvColumnClick;
+            if (Native.IsWindows)
+            {
+                _fileIcons = new ImageList();
+                _fileIcons.ColorDepth = ColorDepth.Depth32Bit;
+                _fileIcons.ImageSize = new Size(16, 16);
+                _lv.SmallImageList = _fileIcons;
+            }
             leftPanel.Controls.Add(_lv);
 
-            // Selection buttons sit right above the group list they act on.
-            var toolbar = new FlowLayoutPanel();
-            toolbar.Dock = DockStyle.Top;
-            toolbar.AutoSize = true;
-            toolbar.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            toolbar.WrapContents = true;
-            toolbar.Padding = new Padding(2);
-            var lblKeep = new Label();
-            lblKeep.Text = "Keep automatically:";
-            lblKeep.AutoSize = true;
-            lblKeep.MinimumSize = new Size(0, Util.RowHeight);
-            lblKeep.TextAlign = ContentAlignment.MiddleLeft;
-            lblKeep.Margin = new Padding(2, 4, 2, 4);
-            toolbar.Controls.Add(lblKeep);
-            _btnKeepPreferred = MakeButton("Preferred folder", 145, delegate { ApplyRule(Scanner.KeepRule.Preferred); });
-            _btnKeepOldest = MakeButton("Oldest", 118, delegate { ApplyRule(Scanner.KeepRule.Oldest); });
-            _btnKeepNewest = MakeButton("Newest", 118, delegate { ApplyRule(Scanner.KeepRule.Newest); });
-            _btnKeepShortest = MakeButton("Shortest path", 135, delegate { ApplyRule(Scanner.KeepRule.ShortestPath); });
-            toolbar.Controls.Add(_btnKeepPreferred);
-            toolbar.Controls.Add(_btnKeepOldest);
-            toolbar.Controls.Add(_btnKeepNewest);
-            toolbar.Controls.Add(_btnKeepShortest);
-            _chkApplyAll = MakeCheck("all groups", true);
-            toolbar.Controls.Add(_chkApplyAll);
-            leftPanel.Controls.Add(toolbar);
+            // Selection rules sit right above the list they act on.
+            _listBar = new ToolStrip();
+            _listBar.Dock = DockStyle.Top;
+            _listBar.GripStyle = ToolStripGripStyle.Hidden;
+            _listBar.Items.Add(new ToolStripLabel("Keep:"));
+            _tsKeepPreferred = AddBarButton(_listBar, "Preferred folder",
+                "Keep the copy that sits in the preferred folder",
+                delegate { ApplyRule(Scanner.KeepRule.Preferred); });
+            _tsKeepOldest = AddBarButton(_listBar, "Oldest",
+                "Keep the copy with the oldest date", delegate { ApplyRule(Scanner.KeepRule.Oldest); });
+            _tsKeepNewest = AddBarButton(_listBar, "Newest",
+                "Keep the copy with the newest date", delegate { ApplyRule(Scanner.KeepRule.Newest); });
+            _tsKeepShortest = AddBarButton(_listBar, "Shortest path",
+                "Keep the copy closest to the scanned folder",
+                delegate { ApplyRule(Scanner.KeepRule.ShortestPath); });
+            _listBar.Items.Add(new ToolStripSeparator());
+            _tsApplyAll = new ToolStripButton("In all groups");
+            _tsApplyAll.CheckOnClick = true;
+            _tsApplyAll.Checked = true;
+            _tsApplyAll.ToolTipText = "Apply the rule to every group, not only the selected one";
+            _listBar.Items.Add(_tsApplyAll);
+            leftPanel.Controls.Add(_listBar);
 
             var lblLeft = new Label();
             lblLeft.Dock = DockStyle.Top;
             lblLeft.Height = 26;
             lblLeft.Padding = new Padding(0, 6, 0, 0);
-            lblLeft.Text = "Duplicate groups";
+            lblLeft.Text = "&Duplicate groups";
             lblLeft.Font = Util.UiFontBold;
             leftPanel.Controls.Add(lblLeft);      // added last: docks above the toolbar
             split.Panel1.Controls.Add(leftPanel);
 
+            // --- right half: the files of the selected group
             var rightPanel = new Panel();
             rightPanel.Dock = DockStyle.Fill;
 
@@ -840,7 +1102,6 @@ namespace TwinPix
             _cards.BackColor = Color.FromArgb(250, 250, 250);
             _cards.Padding = new Padding(6);
             rightPanel.Controls.Add(_cards);
-
 
             _lblGroupTitle = new Label();
             _lblGroupTitle.Dock = DockStyle.Top;
@@ -852,125 +1113,237 @@ namespace TwinPix
             rightPanel.Controls.Add(_lblGroupTitle);
 
             split.Panel2.Controls.Add(rightPanel);
+            split.Panel1MinSize = 320;
+            split.Panel2MinSize = 244;       // one thumbnail card plus its scrollbar
 
             // The centre area sits in a padded host so the two panels keep the
-            // same margin from the window edge as the top and bottom bands.
+            // same margin from the window edge as the bands above and below.
             var centre = new Panel();
             centre.Dock = DockStyle.Fill;
             centre.Padding = new Padding(Util.SideMargin, 0, Util.SideMargin, 2);
             centre.Controls.Add(split);
             Controls.Add(centre);
 
-            // ----- top band
-            var top = new TableLayoutPanel();
-            top.Dock = DockStyle.Top;
-            top.AutoSize = true;
-            top.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            top.ColumnCount = 4;
-            top.Padding = new Padding(Util.SideMargin - 3, 6, Util.SideMargin - 3, 6);
-            top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 230));
-            top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
-            top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+            // ----- destination band (docked bottom, added before the top ones)
+            var destination = new GroupBox();
+            destination.Text = "Destination";
+            destination.Dock = DockStyle.Bottom;
+            destination.AutoSize = true;
+            destination.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            destination.Padding = new Padding(8, 2, 8, 6);
+            destination.Margin = new Padding(Util.SideMargin, 0, Util.SideMargin, 0);
 
-            top.Controls.Add(MakeLabel("Folder to scan:"), 0, 0);
+            var bottom = NewFieldGrid();
+            bottom.Controls.Add(MakeLabel("&Move duplicates to:"), 0, 0);
+            _cboQuarantine = MakeCombo(KeyDestination);
+            _tip.SetToolTip(_cboQuarantine, "Recently used folders are kept in the drop-down list.");
+            bottom.Controls.Add(_cboQuarantine, 1, 0);
+            _btnQuarantine = MakeButton("Bro&wse...", 88,
+                delegate { Browse(_cboQuarantine, "Destination folder for duplicates", KeyDestination); });
+            bottom.Controls.Add(_btnQuarantine, 2, 0);
+            _chkPreserveTree = MakeCheck("&Keep folder structure", true);
+            _tip.SetToolTip(_chkPreserveTree,
+                "Recreate the original subfolders inside the destination.");
+            bottom.Controls.Add(_chkPreserveTree, 3, 0);
+            destination.Controls.Add(bottom);
+            Controls.Add(destination);
+
+            // ----- source band
+            var source = new GroupBox();
+            source.Text = "Source";
+            source.Dock = DockStyle.Top;
+            source.AutoSize = true;
+            source.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            source.Padding = new Padding(8, 2, 8, 6);
+
+            var top = NewFieldGrid();
+            top.Controls.Add(MakeLabel("&Folder to scan:"), 0, 0);
             _cboRoot = MakeCombo(KeyScan);
             _tip.SetToolTip(_cboRoot, "Recently used folders are kept in the drop-down list.");
             top.Controls.Add(_cboRoot, 1, 0);
-            _btnRoot = MakeButton("Browse...", 88, delegate { Browse(_cboRoot, "Folder to scan", KeyScan); });
+            _btnRoot = MakeButton("&Browse...", 88,
+                delegate { Browse(_cboRoot, "Folder to scan", KeyScan); });
             top.Controls.Add(_btnRoot, 2, 0);
-            _btnScan = MakeButton("SCAN", 150, delegate { StartScan(); });
+            _btnScan = MakeButton("&SCAN", 150, delegate { StartScan(); });
             EmphasizeButton(_btnScan);
             AcceptButton = _btnScan;         // Windows outlines the default button
             top.Controls.Add(_btnScan, 3, 0);
 
-            top.Controls.Add(MakeLabel("Preferred folder:"), 0, 1);
+            top.Controls.Add(MakeLabel("&Preferred folder:"), 0, 1);
             _cboPreferred = MakeCombo(KeyPreferred);
             _tip.SetToolTip(_cboPreferred,
                 "Images inside this folder (and its subfolders) are kept by default.");
             top.Controls.Add(_cboPreferred, 1, 1);
-            _btnPreferred = MakeButton("Browse...", 88, delegate { Browse(_cboPreferred, "Preferred folder", KeyPreferred); });
+            _btnPreferred = MakeButton("B&rowse...", 88,
+                delegate { Browse(_cboPreferred, "Preferred folder", KeyPreferred); });
             top.Controls.Add(_btnPreferred, 2, 1);
-            var btnClearPref = MakeButton("Clear", 142, delegate { _cboPreferred.Text = ""; });
+            var btnClearPref = MakeButton("C&lear", 142, delegate { _cboPreferred.Text = ""; });
             top.Controls.Add(btnClearPref, 3, 1);
 
             var opts = new FlowLayoutPanel();
             opts.AutoSize = true;
             opts.WrapContents = true;
             opts.Dock = DockStyle.Fill;
-            _chkRecursive = MakeCheck("Include subfolders", true);
-            _chkContent = MakeCheck("Check content (MD5)", false);
+            _chkRecursive = MakeCheck("&Include subfolders", true);
+            _chkContent = MakeCheck("&Check content (MD5)", false);
             _tip.SetToolTip(_chkContent, "Slower: confirms the files really are identical.");
             opts.Controls.Add(_chkRecursive);
             opts.Controls.Add(_chkContent);
             top.Controls.Add(opts, 0, 2);
             top.SetColumnSpan(opts, 4);
 
-            top.Controls.Add(MakeLabel("Scanned extensions:"), 0, 3);
+            top.Controls.Add(MakeLabel("Scanned e&xtensions:"), 0, 3);
             _txtExt = MakeText();
             _txtExt.Text = DefaultExtensions;
             top.Controls.Add(_txtExt, 1, 3);
             top.SetColumnSpan(_txtExt, 3);
 
-            Controls.Add(top);
+            source.Controls.Add(top);
+            Controls.Add(source);
 
-            // ----- bottom band
-            var bottom = new TableLayoutPanel();
-            bottom.Dock = DockStyle.Bottom;
-            bottom.AutoSize = true;
-            bottom.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            bottom.ColumnCount = 4;
-            bottom.Padding = new Padding(Util.SideMargin - 3, 6, Util.SideMargin - 3, 6);
-            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 230));
-            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
-            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 240));
+            // ----- toolbar
+            _toolbar = new ToolStrip();
+            _toolbar.Dock = DockStyle.Top;
+            _toolbar.GripStyle = ToolStripGripStyle.Hidden;
+            _tsScan = AddBarButton(_toolbar, "Scan", "Search the folder for duplicates (F5)",
+                                   delegate { StartScan(); });
+            Image scanImage = SmallAppImage();
+            if (scanImage != null)
+            {
+                _tsScan.Image = scanImage;
+                _tsScan.DisplayStyle = ToolStripItemDisplayStyle.ImageAndText;
+            }
+            _toolbar.Items.Add(new ToolStripSeparator());
+            _tsMoveGroup = AddBarButton(_toolbar, "Move group",
+                "Move the duplicates of the selected group (Ctrl+M)",
+                delegate { MoveSelected(false); });
+            _tsMoveAll = AddBarButton(_toolbar, "Move all",
+                "Move the duplicates of every group (Ctrl+Shift+M)",
+                delegate { MoveSelected(true); });
+            _toolbar.Items.Add(new ToolStripSeparator());
+            _tsExport = AddBarButton(_toolbar, "Export CSV",
+                "Write the full inventory to a CSV file (Ctrl+E)", delegate { ExportCsv(); });
+            Controls.Add(_toolbar);
 
-            bottom.Controls.Add(MakeLabel("Move duplicates to:"), 0, 0);
-            _cboQuarantine = MakeCombo(KeyDestination);
-            _tip.SetToolTip(_cboQuarantine, "Recently used folders are kept in the drop-down list.");
-            bottom.Controls.Add(_cboQuarantine, 1, 0);
-            _btnQuarantine = MakeButton("Browse...", 88, delegate { Browse(_cboQuarantine, "Destination folder for duplicates", KeyDestination); });
-            bottom.Controls.Add(_btnQuarantine, 2, 0);
-            _chkPreserveTree = MakeCheck("Keep folder structure", true);
-            bottom.Controls.Add(_chkPreserveTree, 3, 0);
+            // ----- menu bar
+            _menu = new MenuStrip();
+            _menu.Dock = DockStyle.Top;
 
-            var actions = new FlowLayoutPanel();
-            actions.AutoSize = true;
-            actions.Dock = DockStyle.Fill;
-            actions.WrapContents = true;
-            _btnMoveGroup = MakeButton("Move duplicates in group", 235, delegate { MoveSelected(false); });
-            _btnMoveAll = MakeButton("Move ALL duplicates", 215, delegate { MoveSelected(true); });
-            EmphasizeButton(_btnMoveAll);
-            _btnExport = MakeButton("Export CSV", 145, delegate { ExportCsv(); });
-            actions.Controls.Add(_btnMoveGroup);
-            actions.Controls.Add(_btnMoveAll);
-            actions.Controls.Add(_btnExport);
-            _lblSummary = new Label();
-            _lblSummary.AutoSize = true;
-            _lblSummary.Padding = new Padding(12, 10, 0, 0);
-            _lblSummary.Text = "";
-            actions.Controls.Add(_lblSummary);
-            bottom.Controls.Add(actions, 0, 1);
-            bottom.SetColumnSpan(actions, 4);
+            var mFile = new ToolStripMenuItem("&File");
+            _miScan = NewMenuItem("&Scan", Keys.F5, delegate { StartScan(); });
+            _miMoveGroup = NewMenuItem("Move duplicates in selected &group",
+                                       Keys.Control | Keys.M, delegate { MoveSelected(false); });
+            _miMoveAll = NewMenuItem("Move &all duplicates",
+                                     Keys.Control | Keys.Shift | Keys.M, delegate { MoveSelected(true); });
+            _miExport = NewMenuItem("&Export list to CSV...", Keys.Control | Keys.E,
+                                    delegate { ExportCsv(); });
+            var miExit = NewMenuItem("E&xit", Keys.None, delegate { Close(); });
+            mFile.DropDownItems.AddRange(new ToolStripItem[] {
+                _miScan, new ToolStripSeparator(),
+                _miMoveGroup, _miMoveAll, new ToolStripSeparator(),
+                _miExport, new ToolStripSeparator(), miExit });
 
-            Controls.Add(bottom);
+            var mEdit = new ToolStripMenuItem("&Edit");
+            _miKeepPreferred = NewMenuItem("Keep the copy in the &preferred folder",
+                Keys.None, delegate { ApplyRule(Scanner.KeepRule.Preferred); });
+            _miKeepOldest = NewMenuItem("Keep the &oldest copy",
+                Keys.None, delegate { ApplyRule(Scanner.KeepRule.Oldest); });
+            _miKeepNewest = NewMenuItem("Keep the &newest copy",
+                Keys.None, delegate { ApplyRule(Scanner.KeepRule.Newest); });
+            _miKeepShortest = NewMenuItem("Keep the copy with the &shortest path",
+                Keys.None, delegate { ApplyRule(Scanner.KeepRule.ShortestPath); });
+            mEdit.DropDownItems.AddRange(new ToolStripItem[] {
+                _miKeepPreferred, _miKeepOldest, _miKeepNewest, _miKeepShortest });
+
+            var mHelp = new ToolStripMenuItem("&Help");
+            mHelp.DropDownItems.Add(NewMenuItem("&About TwinPix...", Keys.None,
+                                                delegate { ShowAbout(); }));
+
+            _menu.Items.AddRange(new ToolStripItem[] { mFile, mEdit, mHelp });
+            Controls.Add(_menu);
+            MainMenuStrip = _menu;
 
             // ----- status bar
             _status = new StatusStrip();
             _statusLabel = new ToolStripStatusLabel("Ready.");
             _statusLabel.Spring = true;
             _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
+            _paneGroups = NewStatusPane(110);
+            _paneDuplicates = NewStatusPane(130);
+            _paneReclaimable = NewStatusPane(190);
             _progress = new ToolStripProgressBar();
             _progress.Style = ProgressBarStyle.Marquee;
             _progress.Visible = false;
-            _status.Items.Add(_statusLabel);
-            _status.Items.Add(_progress);
+            _status.Items.AddRange(new ToolStripItem[] {
+                _statusLabel, _paneGroups, _paneDuplicates, _paneReclaimable, _progress });
             Controls.Add(_status);
 
-            split.Panel1MinSize = 320;
-            split.Panel2MinSize = 244;       // one thumbnail card plus its scrollbar
             EnableActions(false);
+        }
+
+        /// <summary>The four-column grid both bands use for their fields.</summary>
+        TableLayoutPanel NewFieldGrid()
+        {
+            var grid = new TableLayoutPanel();
+            grid.Dock = DockStyle.Top;
+            grid.AutoSize = true;
+            grid.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            grid.ColumnCount = 4;
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 230));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 240));
+            return grid;
+        }
+
+        ToolStripButton AddBarButton(ToolStrip bar, string text, string tip, EventHandler onClick)
+        {
+            var b = new ToolStripButton(text);
+            b.DisplayStyle = ToolStripItemDisplayStyle.Text;
+            b.ToolTipText = tip;
+            b.Click += onClick;
+            bar.Items.Add(b);
+            return b;
+        }
+
+        static ToolStripMenuItem NewMenuItem(string text, Keys shortcut, EventHandler onClick)
+        {
+            var item = new ToolStripMenuItem(text, null, onClick);
+            if (shortcut != Keys.None) item.ShortcutKeys = shortcut;
+            return item;
+        }
+
+        static ToolStripStatusLabel NewStatusPane(int width)
+        {
+            var pane = new ToolStripStatusLabel();
+            pane.AutoSize = false;
+            pane.Width = width;
+            pane.TextAlign = ContentAlignment.MiddleLeft;
+            pane.BorderSides = ToolStripStatusLabelBorderSides.Left;
+            pane.BorderStyle = Border3DStyle.Etched;
+            return pane;
+        }
+
+        /// <summary>16 px frame of the application icon, for the toolbar.</summary>
+        static Image SmallAppImage()
+        {
+            try
+            {
+                Icon big = Util.AppIcon();
+                if (big == null) return null;
+                using (var small = new Icon(big, new Size(16, 16)))
+                    return small.ToBitmap();
+            }
+            catch { return null; }
+        }
+
+        void ShowAbout()
+        {
+            Native.Show(this, "About TwinPix", "TwinPix " + AppVersion,
+                "Finds duplicate images by name, size and extension, then moves the copies "
+                + "you do not keep to a folder of your choice.\r\n\r\n"
+                + "Built with the C# compiler shipped with Windows.",
+                MessageBoxButtons.OK, Native.DialogIcon.Information);
         }
 
         Label MakeLabel(string text)
@@ -1085,13 +1458,21 @@ namespace TwinPix
 
         void EnableActions(bool on)
         {
-            _btnMoveGroup.Enabled = on;
-            _btnMoveAll.Enabled = on;
-            _btnExport.Enabled = on;
-            _btnKeepPreferred.Enabled = on;
-            _btnKeepOldest.Enabled = on;
-            _btnKeepNewest.Enabled = on;
-            _btnKeepShortest.Enabled = on;
+            _miMoveGroup.Enabled = on;
+            _miMoveAll.Enabled = on;
+            _miExport.Enabled = on;
+            _miKeepPreferred.Enabled = on;
+            _miKeepOldest.Enabled = on;
+            _miKeepNewest.Enabled = on;
+            _miKeepShortest.Enabled = on;
+
+            _tsMoveGroup.Enabled = on;
+            _tsMoveAll.Enabled = on;
+            _tsExport.Enabled = on;
+            _tsKeepPreferred.Enabled = on;
+            _tsKeepOldest.Enabled = on;
+            _tsKeepNewest.Enabled = on;
+            _tsKeepShortest.Enabled = on;
         }
 
         // ---------------------- Scanning ------------------------------
@@ -1107,16 +1488,18 @@ namespace TwinPix
             string root = _cboRoot.Text.Trim();
             if (!Directory.Exists(root))
             {
-                MessageBox.Show(this, "Choose a valid folder to scan.", "TwinPix",
-                                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Native.Show(this, "TwinPix", "Choose a folder to scan",
+                            "The path is empty or no longer exists on this computer.",
+                            MessageBoxButtons.OK, Native.DialogIcon.Warning);
                 return;
             }
 
             string pref = _cboPreferred.Text.Trim();
             if (pref.Length > 0 && !Directory.Exists(pref))
             {
-                MessageBox.Show(this, "The preferred folder does not exist.", "TwinPix",
-                                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Native.Show(this, "TwinPix", "The preferred folder does not exist",
+                            "Correct the path, or clear the field to scan without a preferred folder.",
+                            MessageBoxButtons.OK, Native.DialogIcon.Warning);
                 return;
             }
 
@@ -1135,8 +1518,10 @@ namespace TwinPix
             }
             if (o.Extensions.Count == 0)
             {
-                MessageBox.Show(this, "Enter at least one extension.", "TwinPix",
-                                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Native.Show(this, "TwinPix", "Enter at least one extension",
+                            "The scan needs to know which files count as images, "
+                            + "for example .jpg;.png",
+                            MessageBoxButtons.OK, Native.DialogIcon.Warning);
                 return;
             }
 
@@ -1169,8 +1554,8 @@ namespace TwinPix
                 if (e.Error != null)
                 {
                     _statusLabel.Text = "Error: " + e.Error.Message;
-                    MessageBox.Show(this, e.Error.ToString(), "Error during the scan",
-                                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    Native.Show(this, "TwinPix", "The scan failed", e.Error.Message,
+                                MessageBoxButtons.OK, Native.DialogIcon.Error);
                     return;
                 }
                 if (e.Cancelled || e.Result == null)
@@ -1187,8 +1572,10 @@ namespace TwinPix
                                   + (res.Errors > 0 ? " - " + res.Errors + " unreadable item(s)" : "");
                 EnableActions(_groups.Count > 0);
                 if (_groups.Count == 0)
-                    MessageBox.Show(this, "No duplicates found with these criteria.", "TwinPix",
-                                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    Native.Show(this, "TwinPix", "No duplicates found",
+                                "No two images share the same name, size and extension "
+                                + "in this folder.",
+                                MessageBoxButtons.OK, Native.DialogIcon.Information);
             };
             _worker.RunWorkerAsync();
         }
@@ -1200,7 +1587,9 @@ namespace TwinPix
             _groups = new List<DupGroup>();
             _current = null;
             _lblGroupTitle.Text = "No group selected";
-            _lblSummary.Text = "";
+            _paneGroups.Text = "";
+            _paneDuplicates.Text = "";
+            _paneReclaimable.Text = "";
             EnableActions(false);
         }
 
@@ -1220,6 +1609,7 @@ namespace TwinPix
             foreach (var g in _groups)
             {
                 var it = new ListViewItem(g.BaseName);
+                it.ImageKey = EnsureFileIcon(g.Extension);
                 it.SubItems.Add(g.Extension);
                 it.SubItems.Add(Util.FormatSize(g.Size));
                 it.SubItems.Add(g.Files.Count.ToString(CultureInfo.InvariantCulture));
@@ -1245,8 +1635,9 @@ namespace TwinPix
             long wasted = 0;
             int dups = 0;
             foreach (var g in _groups) { wasted += g.Wasted; dups += g.Files.Count - 1; }
-            _lblSummary.Text = _groups.Count + " group(s) - " + dups
-                             + " duplicate(s) - " + Util.FormatSize(wasted) + " reclaimable";
+            _paneGroups.Text = _groups.Count + " group(s)";
+            _paneDuplicates.Text = dups + " duplicate(s)";
+            _paneReclaimable.Text = Util.FormatSize(wasted) + " reclaimable";
         }
 
         /// <summary>A click on a header sorts by that column, a second click reverses it.</summary>
@@ -1269,14 +1660,7 @@ namespace TwinPix
         {
             _lv.ListViewItemSorter = new GroupComparer(_sortColumn, _sortAscending);
             _lv.Sort();
-            for (int i = 0; i < _lv.Columns.Count; i++)
-            {
-                string t = _lv.Columns[i].Text;
-                int marker = t.IndexOf("  ");
-                if (marker > 0) t = t.Substring(0, marker);
-                if (i == _sortColumn) t += _sortAscending ? "  ^" : "  v";
-                _lv.Columns[i].Text = t;
-            }
+            Native.SetSortArrow(_lv, _sortColumn, _sortAscending);
         }
 
         void LvSelectionChanged(object sender, EventArgs e)
@@ -1345,7 +1729,7 @@ namespace TwinPix
         void ApplyRule(Scanner.KeepRule rule)
         {
             if (_groups.Count == 0) return;
-            if (_chkApplyAll.Checked)
+            if (_tsApplyAll.Checked)
             {
                 foreach (var g in _groups) Scanner.AutoSelect(g, rule);
                 foreach (ListViewItem it in _lv.Items)
@@ -1372,16 +1756,18 @@ namespace TwinPix
 
             if (targets.Count == 0)
             {
-                MessageBox.Show(this, "No group selected.", "TwinPix",
-                                MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Native.Show(this, "TwinPix", "No group selected",
+                            "Select a row in the list, or use Move all duplicates.",
+                            MessageBoxButtons.OK, Native.DialogIcon.Information);
                 return;
             }
 
             string dest = _cboQuarantine.Text.Trim();
             if (dest.Length == 0)
             {
-                MessageBox.Show(this, "Enter the folder the duplicates should be moved to.", "TwinPix",
-                                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Native.Show(this, "TwinPix", "Choose where the duplicates should go",
+                            "Fill in the destination folder at the bottom of the window.",
+                            MessageBoxButtons.OK, Native.DialogIcon.Warning);
                 return;
             }
             try
@@ -1390,8 +1776,8 @@ namespace TwinPix
             }
             catch (Exception ex)
             {
-                MessageBox.Show(this, "Destination folder cannot be used:\r\n" + ex.Message,
-                                "TwinPix", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Native.Show(this, "TwinPix", "The destination folder cannot be used", ex.Message,
+                            MessageBoxButtons.OK, Native.DialogIcon.Error);
                 return;
             }
 
@@ -1400,10 +1786,11 @@ namespace TwinPix
             string root = _cboRoot.Text.Trim();
             if (Scanner.IsUnder(dest, root))
             {
-                var r = MessageBox.Show(this,
-                    "The destination folder is inside the folder being scanned.\r\n"
-                    + "Moved duplicates will be found again by the next scan.\r\n\r\nContinue?",
-                    "TwinPix", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                DialogResult r = Native.Show(this, "TwinPix",
+                    "The destination is inside the folder being scanned",
+                    "Duplicates moved there will be found again by the next scan.\r\n\r\n"
+                    + "Continue anyway?",
+                    MessageBoxButtons.YesNo, Native.DialogIcon.Warning);
                 if (r != DialogResult.Yes) return;
             }
 
@@ -1415,15 +1802,21 @@ namespace TwinPix
             }
             if (toMove == 0)
             {
-                MessageBox.Show(this, "Nothing to move (no image marked as the one to keep).",
-                                "TwinPix", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Native.Show(this, "TwinPix", "Nothing to move",
+                            "No image is marked as the one to keep, so every copy would be lost.",
+                            MessageBoxButtons.OK, Native.DialogIcon.Information);
                 return;
             }
 
-            string msg = "Move " + toMove + " file(s) to:\r\n" + dest;
-            if (noKeep > 0) msg += "\r\n\r\n" + noKeep + " group(s) will be skipped (no file marked as the one to keep).";
-            if (MessageBox.Show(this, msg, "Confirmation",
-                                MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+            string detail = "They are moved to:\r\n" + dest
+                          + "\r\n\r\nThe copy marked in each group stays where it is. "
+                          + "Nothing is deleted.";
+            if (noKeep > 0)
+                detail += "\r\n\r\n" + noKeep
+                        + " group(s) will be skipped: no file is marked as the one to keep.";
+            if (Native.Show(this, "TwinPix",
+                            "Move " + toMove + " duplicate file(s)?", detail,
+                            MessageBoxButtons.OKCancel, Native.DialogIcon.Warning) != DialogResult.OK)
                 return;
 
             int moved = 0;
@@ -1475,16 +1868,16 @@ namespace TwinPix
             if (_lv.Items.Count == 0) { _current = null; ClearCards(); _lblGroupTitle.Text = "No group left"; }
             EnableActions(_groups.Count > 0);
 
-            string report = moved + " file(s) moved.";
+            string report = "They are now in " + dest;
             if (errors.Count > 0)
             {
-                report += "\r\n\r\n" + errors.Count + " failure(s):\r\n"
-                        + string.Join("\r\n", errors.Take(15).ToArray());
-                if (errors.Count > 15) report += "\r\n...";
+                report = errors.Count + " file(s) could not be moved:\r\n"
+                       + string.Join("\r\n", errors.Take(10).ToArray());
+                if (errors.Count > 10) report += "\r\n...";
             }
             _statusLabel.Text = moved + " file(s) moved to " + dest;
-            MessageBox.Show(this, report, "TwinPix", MessageBoxButtons.OK,
-                            errors.Count > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+            Native.Show(this, "TwinPix", moved + " file(s) moved", report, MessageBoxButtons.OK,
+                        errors.Count > 0 ? Native.DialogIcon.Warning : Native.DialogIcon.Information);
         }
 
         // ---------------------- Export CSV ----------------------------
@@ -1522,8 +1915,8 @@ namespace TwinPix
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show(this, "Export failed:\r\n" + ex.Message, "TwinPix",
-                                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    Native.Show(this, "TwinPix", "The export failed", ex.Message,
+                                MessageBoxButtons.OK, Native.DialogIcon.Error);
                 }
             }
         }
@@ -1536,10 +1929,62 @@ namespace TwinPix
             return s;
         }
 
+        /// <summary>Caches the shell icon of an extension and returns its key.</summary>
+        string EnsureFileIcon(string extension)
+        {
+            if (_fileIcons == null || string.IsNullOrEmpty(extension)) return null;
+            if (_fileIcons.Images.ContainsKey(extension)) return extension;
+            Icon icon = Native.FileTypeIcon(extension);
+            if (icon == null) return null;
+            try { _fileIcons.Images.Add(extension, icon); }
+            catch { return null; }
+            finally { icon.Dispose(); }
+            return extension;
+        }
+
+        /// <summary>Restores the size and position saved when the window last closed.</summary>
+        void RestorePlacement()
+        {
+            string saved = _history.GetValue(KeyWindow);
+            if (saved == null) return;
+            string[] parts = saved.Split(',');
+            if (parts.Length != 5) return;
+
+            int x, y, w, h;
+            if (!int.TryParse(parts[0], out x) || !int.TryParse(parts[1], out y)
+                || !int.TryParse(parts[2], out w) || !int.TryParse(parts[3], out h)) return;
+            if (w < MinimumSize.Width || h < MinimumSize.Height) return;
+
+            var bounds = new Rectangle(x, y, w, h);
+            bool onScreen = false;
+            foreach (Screen screen in Screen.AllScreens)
+                if (screen.WorkingArea.IntersectsWith(bounds)) onScreen = true;
+            if (!onScreen) return;           // that monitor is gone: keep the default position
+
+            StartPosition = FormStartPosition.Manual;
+            Bounds = bounds;
+            if (parts[4] == "1") WindowState = FormWindowState.Maximized;
+        }
+
+        void SavePlacement()
+        {
+            Rectangle b = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+            _history.SetValue(KeyWindow, b.X + "," + b.Y + "," + b.Width + "," + b.Height
+                              + "," + (WindowState == FormWindowState.Maximized ? "1" : "0"));
+        }
+
         /// <summary>The group list gets three quarters of the window by default.</summary>
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
+
+            // These need a live window handle, so they happen here, not in BuildUi.
+            Native.UseExplorerTheme(_lv);
+            Native.EnableDoubleBuffer(_lv);
+            Native.SetCueBanner(_cboRoot, "Folder to search for duplicates");
+            Native.SetCueBanner(_cboPreferred, "Optional - copies found here are kept");
+            Native.SetCueBanner(_cboQuarantine, "Where the duplicates are moved");
+
             int wanted = (int)(_split.Width * ListWidthRatio);
             int max = _split.Width - _split.SplitterWidth - _split.Panel2MinSize;
             if (wanted > max) wanted = max;
@@ -1550,6 +1995,7 @@ namespace TwinPix
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             if (_worker != null && _worker.IsBusy) _worker.CancelAsync();
+            SavePlacement();
             _history.Add(KeyScan, _cboRoot.Text);
             _history.Add(KeyPreferred, _cboPreferred.Text);
             _history.Add(KeyDestination, _cboQuarantine.Text);

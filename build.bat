@@ -38,9 +38,19 @@ if exist "%ICON%" (
   echo [WARN] assets\twinpix.ico not found - building without an icon.
 )
 
+rem Manifest: pulls in version 6 of the common controls, so the controls are
+rem themed and the Vista task dialog is available. Optional as well.
+set "MANIFEST=%~dp0assets\TwinPix.manifest"
+set "MANIFESTOPT="
+if exist "%MANIFEST%" (
+  set MANIFESTOPT=/win32manifest:"%MANIFEST%"
+) else (
+  echo [WARN] assets\TwinPix.manifest not found - dialogs fall back to message boxes.
+)
+
 "%CSC%" /nologo /target:winexe /platform:anycpu /optimize+ /warn:4 ^
   /out:"%~dp0TwinPix.exe" ^
-  %ICONOPT% ^
+  %ICONOPT% %MANIFESTOPT% ^
   /reference:System.dll ^
   /reference:System.Core.dll ^
   /reference:System.Drawing.dll ^

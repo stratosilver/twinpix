@@ -17,6 +17,11 @@ The script looks for `csc.exe` in `%WINDIR%\Microsoft.NET\Framework64\v4.0.30319
 (then the 32-bit path), compiles `TwinPix.cs` and writes `TwinPix.exe` next to
 it. The executable is self-contained and can be copied anywhere.
 
+`assets\TwinPix.manifest` is applied with `/win32manifest`. It pulls in version 6
+of the common controls, which is what themes the controls and makes the Vista
+task dialog available; without it the build still succeeds and the dialogs fall
+back to plain message boxes.
+
 `assets\twinpix.ico` is applied twice: as the executable's own icon
 (`/win32icon`, what Explorer and the shortcut show) and as an embedded resource
 (`/resource`, what the window and the taskbar show at run time). It is built
@@ -54,7 +59,8 @@ those whose content differs. Slower, but guarantees real duplicates.
    Every folder field is a drop-down that remembers the folders used before:
    pick one from the list, or keep typing — the path auto-completes against the
    file system. The three lists are saved in
-   `%APPDATA%\TwinPix\folders.txt` and are restored at the next start, with the
+   `%APPDATA%\TwinPix\folders.txt` (which also holds the window placement) and
+   are restored at the next start, with the
    most recent entry pre-selected. Right-click a field to clear its list.
 3. **SCAN** — the list on the left shows one row per duplicate group, sorted by
    reclaimable space, and takes three quarters of the window. Click any column
@@ -72,6 +78,10 @@ those whose content differs. Slower, but guarantees real duplicates.
    original relative path inside the destination, so everything can be put back
    if needed.
 
+The menu bar and the toolbar carry the same commands, with the usual shortcuts:
+F5 to scan, Ctrl+M and Ctrl+Shift+M to move, Ctrl+E to export. Every field and
+check box has an access key (Alt+F for the folder to scan, and so on).
+
 **SCAN** is the window's default button (Enter key), which Windows outlines on
 its own; it reads *CANCEL* while a scan runs. It and **Move ALL duplicates**
 carry a bold label to mark them as the primary actions. They are deliberately
@@ -84,6 +94,25 @@ without changing anything.
 
 Extras: double-click a thumbnail to open the image in the default viewer;
 right-click offers "Open containing folder" and "Copy path".
+
+## Native look
+
+The interface deliberately stays on stock Win32 controls and lets Windows draw
+them:
+
+- the group list is themed as Explorer themes its own (`SetWindowTheme`), is
+  double-buffered by the control itself, and its **sort arrow is drawn in the
+  column header** by the header control, not faked with a text marker;
+- each row carries the shell icon of its file type (`SHGetFileInfo`);
+- empty folder fields show a grey prompt (`CB_SETCUEBANNER`);
+- confirmations use the Vista task dialog — a large question, the details below
+  it — and fall back to a message box on older systems;
+- the window remembers its size and position between runs, and ignores them if
+  the monitor they belonged to is gone.
+
+All of it is optional: each helper in the `Native` class checks the platform and
+does nothing when it is not available, so the application still runs (with the
+framework's default appearance) anywhere WinForms runs.
 
 ## Notes
 
