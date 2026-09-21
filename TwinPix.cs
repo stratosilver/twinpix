@@ -1219,6 +1219,79 @@ namespace TwinPix
         public const int ButtonHeight = 32;
         public const int SideMargin = 9;
 
+        // The one accent color used across the interface - for primary
+        // actions, the kept copy in a group, and the selected row.
+        public static readonly Color Accent = Color.FromArgb(31, 139, 92);
+        public static readonly Color AccentDark = Color.FromArgb(22, 106, 68);
+        public static readonly Color AccentTint = Color.FromArgb(227, 245, 236);
+        public static readonly Color AccentTintBorder = Color.FromArgb(191, 230, 210);
+        public static readonly Color BorderGray = Color.FromArgb(214, 214, 214);
+        public static readonly Color DividerGray = Color.FromArgb(230, 230, 230);
+        public static readonly Color PanelGray = Color.FromArgb(250, 250, 250);
+
+        /// <summary>
+        /// Styles a primary action (SCAN, MOVE ALL DUPLICATES): a solid accent
+        /// fill with white text. FlatStyle.Flat is what makes this safe - it
+        /// opts the button out of visual-style rendering on purpose, instead
+        /// of a themed button whose BackColor Windows cannot honour (which is
+        /// what would otherwise fall back to a square-cornered classic button).
+        /// </summary>
+        public static void StylePrimaryButton(Button b)
+        {
+            b.Font = UiFontBold;
+            b.FlatStyle = FlatStyle.Flat;
+            b.FlatAppearance.BorderSize = 0;
+            b.FlatAppearance.MouseOverBackColor = AccentDark;
+            b.FlatAppearance.MouseDownBackColor = AccentDark;
+            b.BackColor = Accent;
+            b.ForeColor = Color.White;
+        }
+
+        /// <summary>Styles a secondary action (Browse, Clear...): a thin flat outline.</summary>
+        public static void StyleSecondaryButton(Button b)
+        {
+            b.FlatStyle = FlatStyle.Flat;
+            b.FlatAppearance.BorderSize = 1;
+            b.FlatAppearance.BorderColor = BorderGray;
+            b.FlatAppearance.MouseOverBackColor = PanelGray;
+            b.BackColor = Color.White;
+            b.ForeColor = SystemColors.ControlText;
+        }
+
+        /// <summary>
+        /// Styles a "keep rule" toggle as one segment of a pill-shaped bar:
+        /// a button-style check box, accent-filled while checked.
+        /// </summary>
+        public static void StyleSegment(CheckBox c)
+        {
+            c.Appearance = Appearance.Button;
+            c.FlatStyle = FlatStyle.Flat;
+            c.FlatAppearance.BorderSize = 1;
+            c.FlatAppearance.BorderColor = BorderGray;
+            c.FlatAppearance.CheckedBackColor = Accent;
+            c.FlatAppearance.MouseOverBackColor = AccentTint;
+            c.TextAlign = ContentAlignment.MiddleCenter;
+            c.BackColor = Color.White;
+
+            // AutoSize does not reliably re-measure a CheckBox once its
+            // Appearance is switched to Button, so the pill is sized by hand -
+            // wide enough for the bold (checked) label, which is the longest.
+            c.AutoSize = false;
+            Size fit = TextRenderer.MeasureText(c.Text, UiFontBold);
+            c.Size = new Size(fit.Width + 28, RowHeight);
+
+            ApplySegmentColors(c);
+            c.CheckedChanged += delegate { ApplySegmentColors(c); };
+        }
+
+        // FlatAppearance.CheckedBackColor already swaps the fill; only the
+        // text color and weight need to follow the checked state by hand.
+        static void ApplySegmentColors(CheckBox c)
+        {
+            c.ForeColor = c.Checked ? Color.White : SystemColors.ControlText;
+            c.Font = c.Checked ? UiFontBold : UiFont;
+        }
+
         /// <summary>
         /// The application icon. It is embedded in the executable by build.bat
         /// (/resource:assets\twinpix.ico); if that is missing, the icon Windows
@@ -1777,22 +1850,21 @@ namespace TwinPix
         readonly PictureBox _pic;
         readonly Label _lblName, _lblDir, _lblInfo;
 
-        static readonly Color KeepBack = Color.FromArgb(226, 245, 228);
-        static readonly Color KeepBorder = Color.FromArgb(46, 139, 87);
-        static readonly Color NormalBack = Color.White;
-
         public FileCard(FileEntry e, bool visual, EventHandler onKeepChanged, ToolTip tip)
         {
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
+                     | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+
             Entry = e;
             Font = Util.UiFont;
             Width = 224;
             Height = 290;
             Margin = new Padding(8);
-            BackColor = NormalBack;
-            BorderStyle = BorderStyle.FixedSingle;
+            BackColor = Color.White;
+            BorderStyle = BorderStyle.None;
 
             _pic = new PictureBox();
-            _pic.Location = new Point(6, 6);
+            _pic.Location = new Point(8, 8);
             _pic.Size = new Size(206, 140);
             _pic.SizeMode = PictureBoxSizeMode.CenterImage;
             _pic.BackColor = Color.FromArgb(244, 244, 244);
@@ -1800,7 +1872,7 @@ namespace TwinPix
             Controls.Add(_pic);
 
             _lblName = new Label();
-            _lblName.Location = new Point(6, 152);
+            _lblName.Location = new Point(8, 154);
             _lblName.Size = new Size(206, 20);
             _lblName.AutoEllipsis = true;
             _lblName.Font = Util.UiFontBold;
@@ -1808,15 +1880,15 @@ namespace TwinPix
             Controls.Add(_lblName);
 
             _lblDir = new Label();
-            _lblDir.Location = new Point(6, 174);
-            _lblDir.Size = new Size(206, 36);
+            _lblDir.Location = new Point(8, 174);
+            _lblDir.Size = new Size(206, 34);
             _lblDir.AutoEllipsis = true;
             _lblDir.ForeColor = Color.DimGray;
             _lblDir.Text = e.DirectoryPath;
             Controls.Add(_lblDir);
 
             _lblInfo = new Label();
-            _lblInfo.Location = new Point(6, 212);
+            _lblInfo.Location = new Point(8, 210);
             _lblInfo.Size = new Size(206, 20);
             _lblInfo.ForeColor = Color.DimGray;
             _lblInfo.AutoEllipsis = true;
@@ -1828,7 +1900,7 @@ namespace TwinPix
             // One line for what marks this copy out: the preferred folder it
             // sits in, and - when the group was matched by appearance - how far
             // it is from the reference copy.
-            string note = e.InPreferred ? "* preferred folder" : "";
+            string note = e.InPreferred ? "★ preferred folder" : "";
             if (visual)
             {
                 string match = e.Distance == 0 ? "same picture"
@@ -1838,18 +1910,29 @@ namespace TwinPix
             if (note.Length > 0)
             {
                 var star = new Label();
-                star.Location = new Point(6, 234);
+                star.Location = new Point(8, 230);
                 star.Size = new Size(206, 20);
                 star.AutoEllipsis = true;
-                star.ForeColor = e.InPreferred ? KeepBorder : Color.DimGray;
+                star.ForeColor = e.InPreferred ? Util.Accent : Color.DimGray;
                 star.Text = note;
                 Controls.Add(star);
             }
 
+            // A button-style radio: a pill that reads "Keep this file" while
+            // unchecked and turns into a solid accent "Keeping this file"
+            // once picked, instead of a plain radio dot.
             Rb = new RadioButton();
-            Rb.Location = new Point(6, 258);
+            Rb.Location = new Point(8, 256);
             Rb.AutoSize = false;
-            Rb.Size = new Size(206, 26);
+            Rb.Size = new Size(206, 28);
+            Rb.Appearance = Appearance.Button;
+            Rb.FlatStyle = FlatStyle.Flat;
+            Rb.FlatAppearance.BorderSize = 1;
+            Rb.FlatAppearance.BorderColor = Util.BorderGray;
+            Rb.FlatAppearance.CheckedBackColor = Util.Accent;
+            Rb.FlatAppearance.MouseOverBackColor = Util.AccentTint;
+            Rb.TextAlign = ContentAlignment.MiddleCenter;
+            Rb.BackColor = Color.White;
             Rb.Text = "Keep this file";
             Rb.Checked = e.Keep;
             Rb.CheckedChanged += onKeepChanged;
@@ -1917,10 +2000,53 @@ namespace TwinPix
         public void UpdateStyle()
         {
             bool keep = Rb.Checked;
-            BackColor = keep ? KeepBack : NormalBack;
-            _lblName.ForeColor = keep ? KeepBorder : SystemColors.ControlText;
-            Rb.ForeColor = keep ? KeepBorder : SystemColors.ControlText;
+            BackColor = keep ? Util.AccentTint : Color.White;
+            _pic.BackColor = keep ? Color.FromArgb(215, 238, 225) : Color.FromArgb(244, 244, 244);
+            _lblName.ForeColor = keep ? Util.AccentDark : SystemColors.ControlText;
+            Rb.Text = keep ? "Keeping this file" : "Keep this file";
+            Rb.ForeColor = keep ? Color.White : SystemColors.ControlText;
             Rb.Font = keep ? Util.UiFontBold : Util.UiFont;
+            Invalidate();
+        }
+
+        /// <summary>Accent border, thicker while kept, plus a check badge over
+        /// the thumbnail - drawn by hand since Panel has no colored border.</summary>
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            bool keep = Rb.Checked;
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            int w = keep ? 2 : 1;
+            var rect = new Rectangle(w / 2, w / 2, Width - 1 - w / 2, Height - 1 - w / 2);
+            using (var path = RoundedRect(rect, 8))
+            using (var pen = new Pen(keep ? Util.Accent : Util.BorderGray, w))
+                g.DrawPath(pen, path);
+
+            if (keep)
+            {
+                var badge = new Rectangle(_pic.Right - 14, _pic.Top - 6, 22, 22);
+                using (var brush = new SolidBrush(Util.Accent))
+                    g.FillEllipse(brush, badge);
+                using (var pen = new Pen(Color.White, 2f) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round })
+                {
+                    g.DrawLine(pen, badge.X + 5, badge.Y + 11, badge.X + 9, badge.Y + 15);
+                    g.DrawLine(pen, badge.X + 9, badge.Y + 15, badge.X + 17, badge.Y + 6);
+                }
+            }
+        }
+
+        static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle r, int radius)
+        {
+            int d = radius * 2;
+            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            path.AddArc(r.X, r.Y, d, d, 180, 90);
+            path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
         }
 
         protected override void Dispose(bool disposing)
@@ -1946,7 +2072,7 @@ namespace TwinPix
         ComboBox _cboRoot, _cboPreferred, _cboQuarantine;
         ComboBox _cboMatch, _cboSensitivity;
         TextBox _txtExt;
-        Button _btnRoot, _btnPreferred, _btnQuarantine, _btnScan;
+        Button _btnRoot, _btnPreferred, _btnQuarantine, _btnScan, _btnMoveAll;
         CheckBox _chkRecursive, _chkPreserveTree, _chkTrash;
         Label _lblQuarantine, _lblSensitivity;
 
@@ -2065,6 +2191,8 @@ namespace TwinPix
             _keepBar.AutoSize = true;
             _keepBar.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             _keepBar.WrapContents = true;
+            _keepBar.BackColor = Util.PanelGray;
+            _keepBar.Padding = new Padding(6, 4, 6, 4);
 
             var lblKeep = new Label();
             lblKeep.Text = "Keep:";
@@ -2076,11 +2204,13 @@ namespace TwinPix
 
             // Driven by the Preferred folder field, and independent of the three
             // rules below: ticked, it puts that folder ahead of whatever they say.
-            _chkKeepPreferred = MakeCheck("Preferred folder", false);
+            _chkKeepPreferred = MakeCheck("★ Preferred folder", false);
             _chkKeepPreferred.Enabled = false;
             _tip.SetToolTip(_chkKeepPreferred,
                 "Keep the copy that sits in the preferred folder, whatever the rule says."
                 + "\r\nFollows the Preferred folder field above.");
+            Util.StyleSegment(_chkKeepPreferred);
+            _chkKeepPreferred.Margin = new Padding(0, 2, 12, 2);
             _keepBar.Controls.Add(_chkKeepPreferred);
 
             // Exactly one of these is always ticked.
@@ -2103,11 +2233,15 @@ namespace TwinPix
             _chkKeepLargest = MakeCheck("Largest file", false);
             _tip.SetToolTip(_chkKeepLargest,
                 "Of the remaining copies, keep the heaviest file.");
-            _keepBar.Controls.Add(_chkKeepOldest);
-            _keepBar.Controls.Add(_chkKeepNewest);
-            _keepBar.Controls.Add(_chkKeepShortest);
-            _keepBar.Controls.Add(_chkKeepBest);
-            _keepBar.Controls.Add(_chkKeepLargest);
+            // Styled as a row of pill toggles, exactly one active.
+            CheckBox[] rule = { _chkKeepOldest, _chkKeepNewest, _chkKeepShortest,
+                                 _chkKeepBest, _chkKeepLargest };
+            for (int i = 0; i < rule.Length; i++)
+            {
+                Util.StyleSegment(rule[i]);
+                rule[i].Margin = new Padding(0, 2, 4, 2);
+                _keepBar.Controls.Add(rule[i]);
+            }
 
             _chkKeepPreferred.CheckedChanged += delegate { RuleChanged(null); };
             _chkKeepOldest.CheckedChanged += delegate { RuleChanged(_chkKeepOldest); };
@@ -2180,6 +2314,18 @@ namespace TwinPix
                 delegate { Browse(_cboQuarantine, "Destination folder for duplicates", KeyDestination); });
             bottom.Controls.Add(_btnQuarantine, 2, 0);
 
+            // The primary action for this band: bold and accent-filled, same
+            // family as SCAN. Its label follows the trash-mode switch below.
+            _btnMoveAll = MakeButton("MOVE ALL &DUPLICATES", 220,
+                delegate { MoveAllDuplicates(); });
+            Util.StylePrimaryButton(_btnMoveAll);
+            bottom.Controls.Add(_btnMoveAll, 3, 0);
+
+            _chkPreserveTree = MakeCheck("&Keep folder structure", true);
+            _tip.SetToolTip(_chkPreserveTree,
+                "Recreate the original subfolders inside the destination.");
+            bottom.Controls.Add(_chkPreserveTree, 1, 1);
+
             // Ticked, it replaces the destination folder: the duplicates go to the
             // Windows Recycle Bin, from where they can be put back.
             _chkTrash = MakeCheck("Move to &trash", false);
@@ -2188,13 +2334,7 @@ namespace TwinPix
                 + "\r\nThey can be restored from there; no destination folder is needed.");
             _chkTrash.Enabled = Native.IsWindows;
             _chkTrash.CheckedChanged += delegate { TrashModeChanged(); };
-            bottom.Controls.Add(_chkTrash, 3, 0);
-
-            _chkPreserveTree = MakeCheck("&Keep folder structure", true);
-            _tip.SetToolTip(_chkPreserveTree,
-                "Recreate the original subfolders inside the destination.");
-            bottom.Controls.Add(_chkPreserveTree, 1, 1);
-            bottom.SetColumnSpan(_chkPreserveTree, 3);
+            bottom.Controls.Add(_chkTrash, 2, 1);
 
             destination.Controls.Add(bottom);
             Controls.Add(destination);
@@ -2380,6 +2520,8 @@ namespace TwinPix
             _paneGroups = NewStatusPane(110);
             _paneDuplicates = NewStatusPane(130);
             _paneReclaimable = NewStatusPane(190);
+            _paneReclaimable.ForeColor = Util.AccentDark;
+            _paneReclaimable.Font = Util.UiFontBold;
             _progress = new ToolStripProgressBar();
             _progress.Style = ProgressBarStyle.Marquee;
             _progress.Visible = false;
@@ -2408,6 +2550,8 @@ namespace TwinPix
             _chkPreserveTree.Enabled = toFolder;
             _tsMoveAll.Text = toFolder ? "Move all" : "Trash all";
             _miMoveAll.Text = toFolder ? "Move &all duplicates" : "Send &all duplicates to the trash";
+            if (_btnMoveAll != null)
+                _btnMoveAll.Text = toFolder ? "MOVE ALL &DUPLICATES" : "SEND ALL TO &TRASH";
         }
 
         /// <summary>
@@ -2571,6 +2715,7 @@ namespace TwinPix
             b.Padding = new Padding(10, 0, 10, 0);
             b.Margin = new Padding(3, 4, 3, 4);
             b.Click += onClick;
+            Util.StyleSecondaryButton(b);
             return b;
         }
 
@@ -2606,15 +2751,11 @@ namespace TwinPix
             return c;
         }
 
-        /// <summary>
-        /// Marks a primary button. A custom BackColor would make Windows drop
-        /// the visual-style rendering and draw a square-cornered classic button,
-        /// so the button is left untouched apart from its bold label. SCAN is
-        /// also the form's default button, which Windows outlines by itself.
-        /// </summary>
+        /// <summary>Marks a primary button with the accent fill. SCAN is also the
+        /// form's default button, which Windows outlines by itself.</summary>
         static void EmphasizeButton(Button b)
         {
-            b.Font = Util.UiFontBold;
+            Util.StylePrimaryButton(b);
         }
 
         void Browse(ComboBox target, string description, string historyKey)
@@ -2637,6 +2778,7 @@ namespace TwinPix
             _miExport.Enabled = on;
             _tsMoveAll.Enabled = on;
             _tsExport.Enabled = on;
+            _btnMoveAll.Enabled = on;
             // the keep rules stay available: they are settings, not actions
         }
 
@@ -2814,6 +2956,11 @@ namespace TwinPix
                 it.SubItems.Add(Util.FormatSize(g.Wasted));
                 it.SubItems.Add(KeptText(g));
                 it.Tag = g;
+                // Reclaimable is the number the whole list is sorted by:
+                // it carries the accent color to stay easy to scan.
+                it.UseItemStyleForSubItems = false;
+                it.SubItems[4].ForeColor = Util.Accent;
+                it.SubItems[4].Font = Util.UiFontBold;
                 _lv.Items.Add(it);
             }
             _lv.EndUpdate();
