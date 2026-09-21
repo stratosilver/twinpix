@@ -1,19 +1,22 @@
 @echo off
 rem =====================================================================
 rem  Builds TwinPix with nothing but the compiler shipped with Windows
-rem  (csc.exe from the .NET Framework, present on every Windows 7+ box).
+rem  (csc.exe from the .NET Framework 4.x, present on every Windows 8+
+rem  box and on any Windows 7 with the framework enabled).
 rem  No Visual Studio, no SDK, no download required.
 rem =====================================================================
 setlocal enabledelayedexpansion
 
 set "CSC="
+set "FWDIR="
 for %%D in (
   "%WINDIR%\Microsoft.NET\Framework64\v4.0.30319"
   "%WINDIR%\Microsoft.NET\Framework\v4.0.30319"
-  "%WINDIR%\Microsoft.NET\Framework64\v3.5"
-  "%WINDIR%\Microsoft.NET\Framework\v3.5"
 ) do (
-  if not defined CSC if exist "%%~D\csc.exe" set "CSC=%%~D\csc.exe"
+  if not defined CSC if exist "%%~D\csc.exe" (
+    set "CSC=%%~D\csc.exe"
+    set "FWDIR=%%~D"
+  )
 )
 
 if not defined CSC (
@@ -55,9 +58,29 @@ if /I "%~1"=="nomanifest" (
   echo [INFO] Manifest skipped on request.
 )
 
+rem Visual matching decodes every image down to a 32x32 grey grid. WIC, which
+rem ships with WPF, can ask a JPEG decoder for a scaled-down image and stops at
+rem one eighth of the resolution instead of unpacking every pixel - the
+rem difference between roughly fifty images a second and a few thousand. The
+rem assemblies live next to the compiler, so this needs no download either;
+rem where they are missing, the build falls back to the GDI+ decoder, which is
+rem correct and only slower. "build.bat nowic" forces that fallback.
+set "WICOPT="
+if exist "%FWDIR%\WPF\PresentationCore.dll" (
+  set WICOPT=/define:WIC /lib:"%FWDIR%\WPF" /reference:PresentationCore.dll /reference:WindowsBase.dll /reference:System.Xaml.dll
+  echo Visual matching: WIC scaled decoding.
+) else (
+  echo [WARN] WPF assemblies not found next to the compiler.
+  echo        Visual matching will use the slower GDI+ decoder.
+)
+if /I "%~1"=="nowic" (
+  set "WICOPT="
+  echo [INFO] WIC skipped on request: GDI+ decoding.
+)
+
 "%CSC%" /nologo /target:winexe /platform:anycpu /optimize+ /warn:4 ^
   /out:"%~dp0TwinPix.exe" ^
-  %ICONOPT% %MANIFESTOPT% ^
+  %ICONOPT% %MANIFESTOPT% %WICOPT% ^
   /reference:System.dll ^
   /reference:System.Core.dll ^
   /reference:System.Drawing.dll ^

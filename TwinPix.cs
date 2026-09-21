@@ -14,6 +14,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -124,6 +125,24 @@ namespace TwinPix
         public bool Keep;
         public string Hash;
 
+        // Visual matching only: the picture's fingerprint, and how far this
+        // copy sits from the reference copy of its group, in bits out of 64.
+        public Fingerprint Fp;
+        public int Distance;
+
+        public int PixelWidth { get { return Fp == null ? 0 : Fp.PixelWidth; } }
+        public int PixelHeight { get { return Fp == null ? 0 : Fp.PixelHeight; } }
+        public long Pixels { get { return (long)PixelWidth * PixelHeight; } }
+
+        public string Dimensions
+        {
+            get
+            {
+                return PixelWidth > 0 && PixelHeight > 0
+                     ? PixelWidth + "x" + PixelHeight : "";
+            }
+        }
+
         public string DirectoryPath
         {
             get
@@ -137,13 +156,39 @@ namespace TwinPix
     public class DupGroup
     {
         public string Extension = "";
-        public long Size;
+        public long Size;            // the largest copy: what the list shows and sorts on
+        public long SizeMin;
+        public long Wasted;
+        public bool Visual;          // matched by appearance, so the copies may differ
         public List<FileEntry> Files = new List<FileEntry>();
 
-        public long Wasted
+        /// <summary>
+        /// Refreshes what the group says about itself. Needed because the
+        /// copies of a visually matched group no longer share one size or even
+        /// one extension, and because a move takes files out of the group.
+        /// Reclaimable space is counted against the largest copy - the best
+        /// case, and the one the "Best resolution" rule aims at.
+        /// </summary>
+        public void Recompute()
         {
-            get { return Files.Count > 1 ? Size * (Files.Count - 1) : 0; }
+            string ext = null;
+            long max = 0, min = long.MaxValue, total = 0;
+            foreach (var f in Files)
+            {
+                if (ext == null) ext = f.Extension;
+                else if (!string.Equals(ext, f.Extension, StringComparison.OrdinalIgnoreCase))
+                    ext = "mixed";
+                if (f.Size > max) max = f.Size;
+                if (f.Size < min) min = f.Size;
+                total += f.Size;
+            }
+            Extension = ext ?? "";
+            Size = max;
+            SizeMin = Files.Count > 0 ? min : 0;
+            Wasted = Files.Count > 1 ? total - max : 0;
         }
+
+        public bool SizesDiffer { get { return SizeMin != Size; } }
 
         public FileEntry Kept
         {
@@ -171,13 +216,30 @@ namespace TwinPix
         }
     }
 
+    /// <summary>What counts as a duplicate.</summary>
+    public enum MatchMode
+    {
+        NameSize,        // same size and extension: fast, and never wrong about bytes
+        Content,         // the above, confirmed by MD5
+        Visual           // the same picture, whatever its size, format or quality
+    }
+
     public class ScanOptions
     {
         public string Root = "";
         public string Preferred = "";
         public bool Recursive = true;
-        public bool CompareContent = false;
+        public MatchMode Mode = MatchMode.NameSize;
+
+        /// <summary>Bits out of 64 two fingerprints may differ by, visual mode only.</summary>
+        public int MaxDistance = 6;
+
+        /// <summary>Shared with the window, so it survives from one scan to the next.</summary>
+        public FingerprintCache Cache;
+
         public HashSet<string> Extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        public bool CompareContent { get { return Mode == MatchMode.Content; } }
     }
 
     public class ScanResult
@@ -185,6 +247,513 @@ namespace TwinPix
         public List<DupGroup> Groups = new List<DupGroup>();
         public int FilesScanned;
         public int Errors;
+        public int Fingerprinted;    // images actually decoded this time
+        public int FromCache;        // images whose fingerprint was already known
+        public int Skipped;          // too small, or too uniform to be told apart
+    }
+
+    // -----------------------------------------------------------------
+    //  Perceptual fingerprint
+    //
+    //  What a picture looks like, in 144 bytes, whatever its file size,
+    //  its dimensions, its format or its JPEG quality:
+    //
+    //    dHash  64 bits  - a 9x8 grey grid, one bit per "is this pixel
+    //                      brighter than the one on its right". Immune to
+    //                      scaling, to re-compression and to a change of
+    //                      overall brightness.
+    //    pHash  64 bits  - the low frequencies of a 32x32 DCT, thresholded
+    //                      at their median. Sturdier, used to confirm.
+    //    Grid   64 bytes - an 8x8 grey grid, kept to compare two candidates
+    //                      pixel by pixel and throw out the look-alikes the
+    //                      two hashes agree on by accident.
+    // -----------------------------------------------------------------
+    public class Fingerprint
+    {
+        public ulong DHash;
+        public ulong PHash;
+        public byte[] Grid;          // 8x8 grey levels
+        public int PixelWidth;
+        public int PixelHeight;
+        public bool Flat;            // too uniform to be told apart from another
+
+        public double AspectRatio
+        {
+            get { return PixelHeight > 0 ? (double)PixelWidth / PixelHeight : 0; }
+        }
+    }
+
+    public static class ImageHash
+    {
+        // Bumped whenever the way a fingerprint is computed changes, so an
+        // old cache is dropped instead of being compared with new values.
+        public const int Version = 1;
+
+        const int Grid = 32;         // working resolution: 32 x 32 grey levels
+
+        /// <summary>
+        /// The fingerprint of one image, or null when it cannot be read.
+        /// Nothing here touches the user interface, so it runs on any thread.
+        /// </summary>
+        public static Fingerprint Compute(string path)
+        {
+            int w = 0, h = 0;
+            byte[] grey = Decode(path, ref w, ref h);
+            if (grey == null) return null;
+
+            var fp = new Fingerprint();
+            fp.PixelWidth = w;
+            fp.PixelHeight = h;
+            fp.Grid = Resample(grey, Grid, Grid, 8, 8);
+            fp.DHash = DHash(Resample(grey, Grid, Grid, 9, 8));
+            fp.PHash = PHash(grey);
+            fp.Flat = StdDev(grey) < 6.0;
+            return fp;
+        }
+
+        // ---------------- decoding ------------------------------------
+
+        /// <summary>
+        /// A 32x32 grey thumbnail, and the real pixel size of the image.
+        /// WIC (when compiled in) asks the JPEG decoder for a scaled-down
+        /// image, which stops at 1/8 resolution in the DCT domain instead of
+        /// unpacking millions of pixels. GDI+ has no such thing and decodes
+        /// everything, so it is only the fallback.
+        /// </summary>
+        static byte[] Decode(string path, ref int width, ref int height)
+        {
+#if WIC
+            try
+            {
+                byte[] viaWic = DecodeWic(path, ref width, ref height);
+                if (viaWic != null) return viaWic;
+            }
+            catch { }
+#endif
+            try { return DecodeGdi(path, ref width, ref height); }
+            catch { return null; }
+        }
+
+#if WIC
+        /// <summary>Decoded width asked of WIC: a JPEG then stops at 1/8.</summary>
+        const int WicWidth = 128;
+
+        /// <summary>
+        /// Scaled decoding through the Windows Imaging Component. The header is
+        /// read first, for the image's real size - which the keep rules need,
+        /// and which the scaled-down bitmap no longer knows - then the pixels
+        /// are decoded straight from the same open file. A stream is used
+        /// rather than a URI so that a '#' or a '%' in a file name cannot be
+        /// mistaken for URI syntax.
+        /// </summary>
+        static byte[] DecodeWic(string path, ref int width, ref int height)
+        {
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
+                                           FileShare.ReadWrite, 65536))
+            {
+                var dec = System.Windows.Media.Imaging.BitmapDecoder.Create(fs,
+                    System.Windows.Media.Imaging.BitmapCreateOptions.DelayCreation
+                    | System.Windows.Media.Imaging.BitmapCreateOptions.IgnoreColorProfile,
+                    System.Windows.Media.Imaging.BitmapCacheOption.None);
+                if (dec.Frames.Count == 0) return null;
+                width = dec.Frames[0].PixelWidth;
+                height = dec.Frames[0].PixelHeight;
+                if (width <= 0 || height <= 0) return null;
+
+                fs.Position = 0;
+                var src = new System.Windows.Media.Imaging.BitmapImage();
+                src.BeginInit();
+                src.StreamSource = fs;
+                src.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                src.CreateOptions = System.Windows.Media.Imaging.BitmapCreateOptions.IgnoreColorProfile;
+                if (width > WicWidth) src.DecodePixelWidth = WicWidth;
+                src.EndInit();
+                src.Freeze();
+
+                var grey = new System.Windows.Media.Imaging.FormatConvertedBitmap();
+                grey.BeginInit();
+                grey.Source = src;
+                grey.DestinationFormat = System.Windows.Media.PixelFormats.Gray8;
+                grey.EndInit();
+                grey.Freeze();
+
+                int gw = grey.PixelWidth, gh = grey.PixelHeight;
+                if (gw <= 0 || gh <= 0) return null;
+                var buffer = new byte[gw * gh];
+                grey.CopyPixels(buffer, gw, 0);
+                return Resample(buffer, gw, gh, Grid, Grid);
+            }
+        }
+#endif
+
+        /// <summary>Full decoding through GDI+: correct everywhere, slower.</summary>
+        static byte[] DecodeGdi(string path, ref int width, ref int height)
+        {
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
+                                           FileShare.ReadWrite, 65536))
+            using (var img = Image.FromStream(fs, false, false))
+            {
+                width = img.Width;
+                height = img.Height;
+                if (width <= 0 || height <= 0) return null;
+
+                using (var small = new Bitmap(Grid, Grid, PixelFormat.Format24bppRgb))
+                {
+                    using (var g = Graphics.FromImage(small))
+                    {
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+                        g.DrawImage(img, 0, 0, Grid, Grid);
+                    }
+
+                    var data = small.LockBits(new Rectangle(0, 0, Grid, Grid),
+                                              ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+                    try
+                    {
+                        var grey = new byte[Grid * Grid];
+                        var row = new byte[data.Stride];
+                        for (int y = 0; y < Grid; y++)
+                        {
+                            Marshal.Copy((IntPtr)(data.Scan0.ToInt64() + (long)y * data.Stride),
+                                         row, 0, data.Stride);
+                            for (int x = 0; x < Grid; x++)
+                            {
+                                int i = x * 3;
+                                // Rec. 601 luma, in integers
+                                grey[y * Grid + x] = (byte)((row[i + 2] * 77
+                                                           + row[i + 1] * 150
+                                                           + row[i] * 29) >> 8);
+                            }
+                        }
+                        return grey;
+                    }
+                    finally { small.UnlockBits(data); }
+                }
+            }
+        }
+
+        // ---------------- signal ---------------------------------------
+
+        /// <summary>
+        /// Box resampling to any size, fractional edges included. Both hashes
+        /// and the comparison grid go through it, so every path ends up
+        /// comparing grids built exactly the same way.
+        /// </summary>
+        public static byte[] Resample(byte[] src, int sw, int sh, int dw, int dh)
+        {
+            var dst = new byte[dw * dh];
+            double fx = (double)sw / dw, fy = (double)sh / dh;
+            for (int y = 0; y < dh; y++)
+            {
+                int y0 = (int)(y * fy), y1 = (int)Math.Ceiling((y + 1) * fy);
+                if (y1 > sh) y1 = sh;
+                if (y1 <= y0) y1 = y0 + 1;
+                for (int x = 0; x < dw; x++)
+                {
+                    int x0 = (int)(x * fx), x1 = (int)Math.Ceiling((x + 1) * fx);
+                    if (x1 > sw) x1 = sw;
+                    if (x1 <= x0) x1 = x0 + 1;
+
+                    int sum = 0, n = 0;
+                    for (int yy = y0; yy < y1; yy++)
+                    {
+                        int rowBase = yy * sw;
+                        for (int xx = x0; xx < x1; xx++) { sum += src[rowBase + xx]; n++; }
+                    }
+                    dst[y * dw + x] = (byte)(n > 0 ? sum / n : 0);
+                }
+            }
+            return dst;
+        }
+
+        /// <summary>One bit per pair of horizontal neighbours on a 9x8 grid.</summary>
+        static ulong DHash(byte[] g)
+        {
+            ulong bits = 0;
+            int bit = 0;
+            for (int y = 0; y < 8; y++)
+                for (int x = 0; x < 8; x++, bit++)
+                    if (g[y * 9 + x] > g[y * 9 + x + 1]) bits |= 1UL << bit;
+            return bits;
+        }
+
+        // Cosine table of the 32-point DCT-II, only the 8 coefficients kept.
+        static readonly double[] Cos = BuildCos();
+
+        static double[] BuildCos()
+        {
+            var t = new double[8 * Grid];
+            for (int u = 0; u < 8; u++)
+                for (int x = 0; x < Grid; x++)
+                    t[u * Grid + x] = Math.Cos((2 * x + 1) * u * Math.PI / (2.0 * Grid));
+            return t;
+        }
+
+        /// <summary>
+        /// The 8x8 low-frequency corner of a 32x32 DCT, thresholded at its
+        /// median. Only the coefficients that are kept are worked out - the
+        /// separable transform costs about ten thousand operations, nothing
+        /// next to decoding the image.
+        /// </summary>
+        static ulong PHash(byte[] g)
+        {
+            var rows = new double[Grid * 8];          // DCT along x, 8 columns kept
+            for (int y = 0; y < Grid; y++)
+            {
+                int b = y * Grid;
+                for (int u = 0; u < 8; u++)
+                {
+                    double s = 0;
+                    int c = u * Grid;
+                    for (int x = 0; x < Grid; x++) s += g[b + x] * Cos[c + x];
+                    rows[y * 8 + u] = s;
+                }
+            }
+
+            var block = new double[64];
+            for (int u = 0; u < 8; u++)
+            {
+                for (int v = 0; v < 8; v++)
+                {
+                    double s = 0;
+                    int c = v * Grid;
+                    for (int y = 0; y < Grid; y++) s += rows[y * 8 + u] * Cos[c + y];
+                    block[v * 8 + u] = s;
+                }
+            }
+
+            // The DC term carries the average brightness, which says nothing
+            // about the picture, so it is left out of the median.
+            var sorted = new double[63];
+            Array.Copy(block, 1, sorted, 0, 63);
+            Array.Sort(sorted);
+            double median = (sorted[30] + sorted[31]) / 2.0;
+
+            ulong bits = 0;
+            for (int i = 0; i < 64; i++)
+                if (block[i] > median) bits |= 1UL << i;
+            return bits;
+        }
+
+        static double StdDev(byte[] g)
+        {
+            double sum = 0, sum2 = 0;
+            for (int i = 0; i < g.Length; i++) { sum += g[i]; sum2 += (double)g[i] * g[i]; }
+            double mean = sum / g.Length;
+            double var = sum2 / g.Length - mean * mean;
+            return var > 0 ? Math.Sqrt(var) : 0;
+        }
+
+        // ---------------- comparing -------------------------------------
+
+        /// <summary>Number of differing bits, the .NET 4 way (no POPCNT intrinsic).</summary>
+        public static int Distance(ulong a, ulong b)
+        {
+            ulong v = a ^ b;
+            v = v - ((v >> 1) & 0x5555555555555555UL);
+            v = (v & 0x3333333333333333UL) + ((v >> 2) & 0x3333333333333333UL);
+            v = (v + (v >> 4)) & 0x0F0F0F0F0F0F0F0FUL;
+            return (int)((v * 0x0101010101010101UL) >> 56);
+        }
+
+        /// <summary>
+        /// Mean absolute difference between two 8x8 grids, each shifted to its
+        /// own average first, so that the same picture exported darker or
+        /// lighter still matches while two different flat images do not.
+        /// </summary>
+        public static double GridDifference(byte[] a, byte[] b)
+        {
+            if (a == null || b == null || a.Length != b.Length) return 255;
+            int sa = 0, sb = 0;
+            for (int i = 0; i < a.Length; i++) { sa += a[i]; sb += b[i]; }
+            double ma = (double)sa / a.Length, mb = (double)sb / b.Length;
+            double sum = 0;
+            for (int i = 0; i < a.Length; i++) sum += Math.Abs((a[i] - ma) - (b[i] - mb));
+            return sum / a.Length;
+        }
+    }
+
+    // -----------------------------------------------------------------
+    //  Fingerprint cache
+    //
+    //  Decoding is the whole cost of a visual scan, and the answer for a
+    //  file that has not changed is always the same. Keeping it on disk
+    //  makes the second scan of a folder almost free, which is the usual
+    //  case: people re-scan the same pictures.
+    //
+    //  A row is trusted only while the file's size and modification time
+    //  still match, so an edited image is fingerprinted again.
+    // -----------------------------------------------------------------
+    public class FingerprintCache
+    {
+        const int MaxRows = 400000;          // ~60 MB on disk, far beyond any real library
+
+        class Row
+        {
+            public long Size;
+            public long Ticks;
+            public long Seen;
+            public Fingerprint Fp;
+        }
+
+        readonly Dictionary<string, Row> _rows =
+            new Dictionary<string, Row>(StringComparer.OrdinalIgnoreCase);
+        readonly object _lock = new object();
+        bool _dirty;
+
+        public static string FilePath
+        {
+            get
+            {
+                string dir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "TwinPix");
+                return Path.Combine(dir, "fingerprints.bin");
+            }
+        }
+
+        /// <summary>Tells a cache written by a different decoder from this one.</summary>
+        static int DecoderId
+        {
+            get
+            {
+#if WIC
+                return 1;
+#else
+                return 0;
+#endif
+            }
+        }
+
+        public int Count { get { return _rows.Count; } }
+
+        public void Load()
+        {
+            _rows.Clear();
+            _dirty = false;
+            try
+            {
+                string file = FilePath;
+                if (!File.Exists(file)) return;
+                using (var fs = new FileStream(file, FileMode.Open, FileAccess.Read,
+                                               FileShare.Read, 65536))
+                using (var r = new BinaryReader(fs))
+                {
+                    if (r.ReadInt32() != 0x50465054) return;            // "TPFP"
+                    if (r.ReadInt32() != ImageHash.Version) return;     // hashing changed
+                    if (r.ReadInt32() != DecoderId) return;             // grids would differ
+                    int n = r.ReadInt32();
+                    if (n < 0 || n > MaxRows) return;
+                    for (int i = 0; i < n; i++)
+                    {
+                        string path = r.ReadString();
+                        var row = new Row();
+                        row.Size = r.ReadInt64();
+                        row.Ticks = r.ReadInt64();
+                        row.Seen = r.ReadInt64();
+                        var fp = new Fingerprint();
+                        fp.DHash = r.ReadUInt64();
+                        fp.PHash = r.ReadUInt64();
+                        fp.PixelWidth = r.ReadInt32();
+                        fp.PixelHeight = r.ReadInt32();
+                        fp.Flat = r.ReadBoolean();
+                        fp.Grid = r.ReadBytes(64);
+                        if (fp.Grid.Length != 64) return;               // truncated file
+                        row.Fp = fp;
+                        _rows[path] = row;
+                    }
+                }
+            }
+            catch { _rows.Clear(); }        // a damaged cache is just a slower scan
+        }
+
+        /// <summary>The stored fingerprint, or null when it is missing or stale.</summary>
+        public Fingerprint Get(string path, long size, long ticks)
+        {
+            lock (_lock)
+            {
+                Row row;
+                if (!_rows.TryGetValue(path, out row)) return null;
+                if (row.Size != size || row.Ticks != ticks) return null;
+                row.Seen = DateTime.UtcNow.Ticks;
+                return row.Fp;
+            }
+        }
+
+        public void Put(string path, long size, long ticks, Fingerprint fp)
+        {
+            if (fp == null) return;
+            lock (_lock)
+            {
+                var row = new Row();
+                row.Size = size;
+                row.Ticks = ticks;
+                row.Seen = DateTime.UtcNow.Ticks;
+                row.Fp = fp;
+                _rows[path] = row;
+                _dirty = true;
+            }
+        }
+
+        public void Save()
+        {
+            if (!_dirty) return;
+            try
+            {
+                var keys = new List<string>(_rows.Keys);
+                if (keys.Count > MaxRows)
+                {
+                    // keep the most recently used rows
+                    keys.Sort(delegate(string a, string b)
+                    {
+                        return _rows[b].Seen.CompareTo(_rows[a].Seen);
+                    });
+                    keys.RemoveRange(MaxRows, keys.Count - MaxRows);
+                }
+
+                string file = FilePath;
+                string dir = Path.GetDirectoryName(file);
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+
+                // written beside the real file, then swapped in: an interrupted
+                // save leaves the previous cache intact
+                string tmp = file + ".tmp";
+                using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write,
+                                               FileShare.None, 65536))
+                using (var w = new BinaryWriter(fs))
+                {
+                    w.Write(0x50465054);
+                    w.Write(ImageHash.Version);
+                    w.Write(DecoderId);
+                    w.Write(keys.Count);
+                    foreach (string path in keys)
+                    {
+                        Row row = _rows[path];
+                        w.Write(path);
+                        w.Write(row.Size);
+                        w.Write(row.Ticks);
+                        w.Write(row.Seen);
+                        w.Write(row.Fp.DHash);
+                        w.Write(row.Fp.PHash);
+                        w.Write(row.Fp.PixelWidth);
+                        w.Write(row.Fp.PixelHeight);
+                        w.Write(row.Fp.Flat);
+                        w.Write(row.Fp.Grid, 0, 64);
+                    }
+                }
+                if (File.Exists(file)) File.Delete(file);
+                File.Move(tmp, file);
+                _dirty = false;
+            }
+            catch { }       // never lose a scan over a cache that cannot be written
+        }
+
+        public void Clear()
+        {
+            lock (_lock) { _rows.Clear(); _dirty = true; }
+            try { if (File.Exists(FilePath)) File.Delete(FilePath); }
+            catch { }
+        }
     }
 
     // -----------------------------------------------------------------
@@ -253,6 +822,25 @@ namespace TwinPix
             }
         }
 
+        /// <summary>Reads one file into an entry, or returns null.</summary>
+        static FileEntry MakeEntry(string path, ScanOptions o, ScanResult res)
+        {
+            FileInfo fi;
+            try { fi = new FileInfo(path); if (!fi.Exists) return null; }
+            catch { res.Errors++; return null; }
+
+            var e = new FileEntry();
+            e.FullPath = fi.FullName;
+            e.FileName = fi.Name;
+            e.Extension = (fi.Extension ?? "").ToLowerInvariant();
+            try { e.Size = fi.Length; }
+            catch { res.Errors++; return null; }
+            try { e.Modified = fi.LastWriteTime; }
+            catch { e.Modified = DateTime.MinValue; }
+            e.InPreferred = IsUnder(fi.FullName, o.Preferred);
+            return e;
+        }
+
         public static ScanResult Scan(ScanOptions o, BackgroundWorker bw)
         {
             var res = new ScanResult();
@@ -260,81 +848,10 @@ namespace TwinPix
             Walk(o.Root, o, paths, res, bw);
             res.FilesScanned = paths.Count;
 
-            // Grouping: extension (lower-cased, so .JPG and .jpg match) | size
-            var map = new Dictionary<string, DupGroup>(StringComparer.Ordinal);
-
-            for (int i = 0; i < paths.Count; i++)
-            {
-                if (bw != null && bw.CancellationPending) return res;
-                string p = paths[i];
-                FileInfo fi;
-                try { fi = new FileInfo(p); if (!fi.Exists) continue; }
-                catch { res.Errors++; continue; }
-
-                string ext = (fi.Extension ?? "").ToLowerInvariant();
-                string key = ext + "|" + fi.Length.ToString(CultureInfo.InvariantCulture);
-
-                DupGroup g;
-                if (!map.TryGetValue(key, out g))
-                {
-                    g = new DupGroup();
-                    g.Extension = ext;
-                    g.Size = fi.Length;
-                    map[key] = g;
-                }
-
-                var e = new FileEntry();
-                e.FullPath = fi.FullName;
-                e.FileName = fi.Name;
-                e.Extension = ext;
-                e.Size = fi.Length;
-                try { e.Modified = fi.LastWriteTime; }
-                catch { e.Modified = DateTime.MinValue; }
-                e.InPreferred = IsUnder(fi.FullName, o.Preferred);
-                g.Files.Add(e);
-
-                if (bw != null && (i % 200) == 0)
-                    bw.ReportProgress(0, "Grouping: " + (i + 1) + " / " + paths.Count);
-            }
-
-            var groups = new List<DupGroup>();
-            foreach (var kv in map)
-                if (kv.Value.Files.Count > 1) groups.Add(kv.Value);
-
-            // Optional content check: split each group by MD5
-            if (o.CompareContent)
-            {
-                var refined = new List<DupGroup>();
-                int done = 0;
-                foreach (var g in groups)
-                {
-                    if (bw != null && bw.CancellationPending) return res;
-                    var byHash = new Dictionary<string, DupGroup>(StringComparer.Ordinal);
-                    foreach (var f in g.Files)
-                    {
-                        string h;
-                        try { h = Md5(f.FullPath); }
-                        catch { h = "ERR:" + f.FullPath; res.Errors++; }
-                        f.Hash = h;
-                        DupGroup sub;
-                        if (!byHash.TryGetValue(h, out sub))
-                        {
-                            sub = new DupGroup();
-                            sub.Extension = g.Extension;
-                            sub.Size = g.Size;
-                            byHash[h] = sub;
-                        }
-                        sub.Files.Add(f);
-                    }
-                    foreach (var kv in byHash)
-                        if (kv.Value.Files.Count > 1) refined.Add(kv.Value);
-
-                    done++;
-                    if (bw != null)
-                        bw.ReportProgress(0, "Checking content: " + done + " / " + groups.Count);
-                }
-                groups = refined;
-            }
+            List<DupGroup> groups = o.Mode == MatchMode.Visual
+                                  ? GroupByAppearance(o, res, paths, bw)
+                                  : GroupByBytes(o, res, paths, bw);
+            if (groups == null) return res;          // cancelled
 
             foreach (var g in groups)
             {
@@ -342,7 +859,9 @@ namespace TwinPix
                 {
                     return string.Compare(a.FullPath, b.FullPath, StringComparison.OrdinalIgnoreCase);
                 });
-                AutoSelect(g, DefaultRule, o.Preferred.Length > 0);
+                g.Recompute();
+                AutoSelect(g, o.Mode == MatchMode.Visual ? KeepRule.BestResolution : DefaultRule,
+                           o.Preferred.Length > 0);
             }
 
             groups.Sort(delegate(DupGroup a, DupGroup b)
@@ -358,7 +877,275 @@ namespace TwinPix
             return res;
         }
 
-        public enum KeepRule { Oldest, Newest, ShortestPath }
+        // ---------------- matching by bytes ----------------------------
+
+        /// <summary>Same extension and same size, optionally confirmed by MD5.</summary>
+        static List<DupGroup> GroupByBytes(ScanOptions o, ScanResult res,
+                                           List<string> paths, BackgroundWorker bw)
+        {
+            // Grouping: extension (lower-cased, so .JPG and .jpg match) | size
+            var map = new Dictionary<string, DupGroup>(StringComparer.Ordinal);
+
+            for (int i = 0; i < paths.Count; i++)
+            {
+                if (bw != null && bw.CancellationPending) return null;
+                FileEntry e = MakeEntry(paths[i], o, res);
+                if (e == null) continue;
+
+                string key = e.Extension + "|" + e.Size.ToString(CultureInfo.InvariantCulture);
+                DupGroup g;
+                if (!map.TryGetValue(key, out g)) { g = new DupGroup(); map[key] = g; }
+                g.Files.Add(e);
+
+                if (bw != null && (i % 200) == 0)
+                    bw.ReportProgress(0, "Grouping: " + (i + 1) + " / " + paths.Count);
+            }
+
+            var groups = new List<DupGroup>();
+            foreach (var kv in map)
+                if (kv.Value.Files.Count > 1) groups.Add(kv.Value);
+
+            if (!o.CompareContent) return groups;
+
+            // Content check: split each group by MD5
+            var refined = new List<DupGroup>();
+            int done = 0;
+            foreach (var g in groups)
+            {
+                if (bw != null && bw.CancellationPending) return null;
+                var byHash = new Dictionary<string, DupGroup>(StringComparer.Ordinal);
+                foreach (var f in g.Files)
+                {
+                    string h;
+                    try { h = Md5(f.FullPath); }
+                    catch { h = "ERR:" + f.FullPath; res.Errors++; }
+                    f.Hash = h;
+                    DupGroup sub;
+                    if (!byHash.TryGetValue(h, out sub)) { sub = new DupGroup(); byHash[h] = sub; }
+                    sub.Files.Add(f);
+                }
+                foreach (var kv in byHash)
+                    if (kv.Value.Files.Count > 1) refined.Add(kv.Value);
+
+                done++;
+                if (bw != null)
+                    bw.ReportProgress(0, "Checking content: " + done + " / " + groups.Count);
+            }
+            return refined;
+        }
+
+        // ---------------- matching by appearance -----------------------
+
+        /// <summary>Below this, an image carries too little to be compared.</summary>
+        const int MinSide = 32;
+
+        /// <summary>
+        /// A band holding this many images is a degenerate one - a wall of
+        /// identical-looking thumbnails - and comparing it pair by pair would
+        /// cost more than it is worth. Its other bands still catch real pairs.
+        /// </summary>
+        const int MaxBucket = 3000;
+
+        static List<DupGroup> GroupByAppearance(ScanOptions o, ScanResult res,
+                                                List<string> paths, BackgroundWorker bw)
+        {
+            var entries = new List<FileEntry>(paths.Count);
+            for (int i = 0; i < paths.Count; i++)
+            {
+                if (bw != null && bw.CancellationPending) return null;
+                FileEntry e = MakeEntry(paths[i], o, res);
+                if (e != null) entries.Add(e);
+            }
+            if (entries.Count == 0) return new List<DupGroup>();
+
+            if (!ComputeFingerprints(entries, o, res, bw)) return null;
+
+            // Keep what can meaningfully be compared.
+            var usable = new List<FileEntry>(entries.Count);
+            foreach (var e in entries)
+            {
+                if (e.Fp == null) { res.Errors++; continue; }
+                if (e.Fp.Flat || e.PixelWidth < MinSide || e.PixelHeight < MinSide)
+                {
+                    res.Skipped++;
+                    continue;
+                }
+                usable.Add(e);
+            }
+            if (usable.Count < 2) return new List<DupGroup>();
+
+            if (bw != null) bw.ReportProgress(0, "Comparing " + usable.Count + " image(s)...");
+            return Cluster(usable, o.MaxDistance, bw);
+        }
+
+        /// <summary>
+        /// Fingerprints every image, several at a time. Decoding is what a
+        /// visual scan costs, and it is pure computation on independent files,
+        /// so it scales with the number of cores. Anything already in the
+        /// cache costs nothing at all.
+        /// </summary>
+        static bool ComputeFingerprints(List<FileEntry> entries, ScanOptions o, ScanResult res,
+                                        BackgroundWorker bw)
+        {
+            int done = 0, hits = 0, computed = 0;
+            bool cancelled = false;
+
+            var po = new System.Threading.Tasks.ParallelOptions();
+            po.MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount);
+
+            System.Threading.Tasks.Parallel.For(0, entries.Count, po,
+                delegate(int i, System.Threading.Tasks.ParallelLoopState state)
+            {
+                if (bw != null && bw.CancellationPending) { cancelled = true; state.Stop(); return; }
+
+                FileEntry e = entries[i];
+                long ticks = e.Modified.Ticks;
+                Fingerprint fp = o.Cache == null ? null : o.Cache.Get(e.FullPath, e.Size, ticks);
+                if (fp != null)
+                {
+                    System.Threading.Interlocked.Increment(ref hits);
+                }
+                else
+                {
+                    fp = ImageHash.Compute(e.FullPath);
+                    if (fp != null)
+                    {
+                        System.Threading.Interlocked.Increment(ref computed);
+                        if (o.Cache != null) o.Cache.Put(e.FullPath, e.Size, ticks, fp);
+                    }
+                }
+                e.Fp = fp;
+
+                int n = System.Threading.Interlocked.Increment(ref done);
+                if (bw != null && (n % 64) == 0)
+                    bw.ReportProgress(0, "Fingerprinting: " + n + " / " + entries.Count);
+            });
+
+            res.Fingerprinted = computed;
+            res.FromCache = hits;
+            return !cancelled;
+        }
+
+        /// <summary>
+        /// Two fingerprints at most <paramref name="maxD"/> bits apart share at
+        /// least one of k = 2^ceil(log2(maxD+1)) bands, because maxD differing
+        /// bits cannot touch more than maxD of them. Indexing every band
+        /// therefore finds every pair without comparing everything with
+        /// everything: what is left is to confirm the candidates.
+        /// </summary>
+        static List<DupGroup> Cluster(List<FileEntry> items, int maxD, BackgroundWorker bw)
+        {
+            int k = 2;
+            while (k <= maxD) k *= 2;
+            if (k > 16) k = 16;
+            int bandBits = 64 / k;
+            ulong mask = bandBits >= 64 ? ulong.MaxValue : (1UL << bandBits) - 1;
+
+            var parent = new int[items.Count];
+            for (int i = 0; i < parent.Length; i++) parent[i] = i;
+
+            for (int band = 0; band < k; band++)
+            {
+                if (bw != null && bw.CancellationPending) return null;
+
+                var buckets = new Dictionary<ulong, List<int>>();
+                int shift = band * bandBits;
+                for (int i = 0; i < items.Count; i++)
+                {
+                    ulong key = (items[i].Fp.DHash >> shift) & mask;
+                    List<int> list;
+                    if (!buckets.TryGetValue(key, out list)) { list = new List<int>(); buckets[key] = list; }
+                    list.Add(i);
+                }
+
+                foreach (var kv in buckets)
+                {
+                    List<int> list = kv.Value;
+                    if (list.Count < 2 || list.Count > MaxBucket) continue;
+                    for (int a = 0; a < list.Count; a++)
+                    {
+                        for (int b = a + 1; b < list.Count; b++)
+                        {
+                            int ia = list[a], ib = list[b];
+                            if (Find(parent, ia) == Find(parent, ib)) continue;   // already together
+                            if (SamePicture(items[ia].Fp, items[ib].Fp, maxD))
+                                Union(parent, ia, ib);
+                        }
+                    }
+                }
+
+                if (bw != null)
+                    bw.ReportProgress(0, "Comparing: band " + (band + 1) + " / " + k);
+            }
+
+            // components of two or more files become groups
+            var byRoot = new Dictionary<int, DupGroup>();
+            for (int i = 0; i < items.Count; i++)
+            {
+                int root = Find(parent, i);
+                DupGroup g;
+                if (!byRoot.TryGetValue(root, out g))
+                {
+                    g = new DupGroup();
+                    g.Visual = true;
+                    byRoot[root] = g;
+                }
+                g.Files.Add(items[i]);
+            }
+
+            var groups = new List<DupGroup>();
+            foreach (var kv in byRoot)
+            {
+                DupGroup g = kv.Value;
+                if (g.Files.Count < 2) continue;
+
+                // The copy with the most pixels is the reference: every other
+                // one is shown as so many bits away from it.
+                FileEntry reference = g.Files[0];
+                foreach (var f in g.Files)
+                    if (f.Pixels > reference.Pixels
+                        || (f.Pixels == reference.Pixels && f.Size > reference.Size))
+                        reference = f;
+                foreach (var f in g.Files)
+                    f.Distance = ImageHash.Distance(f.Fp.DHash, reference.Fp.DHash);
+
+                groups.Add(g);
+            }
+            return groups;
+        }
+
+        /// <summary>
+        /// Confirms a candidate pair. The two hashes agreeing is not enough on
+        /// its own: the framing has to match, and the grey grids have to line
+        /// up pixel by pixel, which is what tells two genuinely similar
+        /// pictures apart from one picture stored twice.
+        /// </summary>
+        static bool SamePicture(Fingerprint a, Fingerprint b, int maxD)
+        {
+            if (ImageHash.Distance(a.DHash, b.DHash) > maxD) return false;
+            if (ImageHash.Distance(a.PHash, b.PHash) > maxD + 4) return false;
+
+            double ra = a.AspectRatio, rb = b.AspectRatio;
+            if (ra <= 0 || rb <= 0) return false;
+            double ratio = ra > rb ? ra / rb : rb / ra;
+            if (ratio > 1.08) return false;             // re-framed, not re-saved
+
+            return ImageHash.GridDifference(a.Grid, b.Grid) <= 10.0 + maxD;
+        }
+
+        static int Find(int[] parent, int x)
+        {
+            while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+            return x;
+        }
+
+        static void Union(int[] parent, int a, int b)
+        {
+            int ra = Find(parent, a), rb = Find(parent, b);
+            if (ra != rb) parent[rb] = ra;
+        }
+
+        public enum KeepRule { Oldest, Newest, ShortestPath, BestResolution, LargestFile }
 
         /// <summary>The rule the window starts with, and the one Scan() applies.</summary>
         public const KeepRule DefaultRule = KeepRule.ShortestPath;
@@ -395,6 +1182,16 @@ namespace TwinPix
                     break;
                 case KeepRule.Newest:
                     if (a.Modified != b.Modified) return a.Modified > b.Modified;
+                    break;
+                case KeepRule.BestResolution:
+                    // the most pixels, then the heaviest file: the copy closest
+                    // to the original when the same picture exists several times
+                    if (a.Pixels != b.Pixels) return a.Pixels > b.Pixels;
+                    if (a.Size != b.Size) return a.Size > b.Size;
+                    break;
+                case KeepRule.LargestFile:
+                    if (a.Size != b.Size) return a.Size > b.Size;
+                    if (a.Pixels != b.Pixels) return a.Pixels > b.Pixels;
                     break;
                 default: // ShortestPath: fewest folders deep, then shortest path
                     int da = Depth(a.FullPath), db = Depth(b.FullPath);
@@ -984,7 +1781,7 @@ namespace TwinPix
         static readonly Color KeepBorder = Color.FromArgb(46, 139, 87);
         static readonly Color NormalBack = Color.White;
 
-        public FileCard(FileEntry e, EventHandler onKeepChanged, ToolTip tip)
+        public FileCard(FileEntry e, bool visual, EventHandler onKeepChanged, ToolTip tip)
         {
             Entry = e;
             Font = Util.UiFont;
@@ -1022,16 +1819,30 @@ namespace TwinPix
             _lblInfo.Location = new Point(6, 212);
             _lblInfo.Size = new Size(206, 20);
             _lblInfo.ForeColor = Color.DimGray;
-            _lblInfo.Text = Util.FormatSize(e.Size) + "  -  " + e.Modified.ToString("yyyy-MM-dd HH:mm");
+            _lblInfo.AutoEllipsis = true;
+            _lblInfo.Text = Util.FormatSize(e.Size)
+                          + (e.Dimensions.Length > 0 ? "  -  " + e.Dimensions : "")
+                          + "  -  " + e.Modified.ToString("yyyy-MM-dd");
             Controls.Add(_lblInfo);
 
-            if (e.InPreferred)
+            // One line for what marks this copy out: the preferred folder it
+            // sits in, and - when the group was matched by appearance - how far
+            // it is from the reference copy.
+            string note = e.InPreferred ? "* preferred folder" : "";
+            if (visual)
+            {
+                string match = e.Distance == 0 ? "same picture"
+                                               : "differs by " + e.Distance + "/64";
+                note = note.Length > 0 ? note + "  -  " + match : match;
+            }
+            if (note.Length > 0)
             {
                 var star = new Label();
                 star.Location = new Point(6, 234);
                 star.Size = new Size(206, 20);
-                star.ForeColor = KeepBorder;
-                star.Text = "* preferred folder";
+                star.AutoEllipsis = true;
+                star.ForeColor = e.InPreferred ? KeepBorder : Color.DimGray;
+                star.Text = note;
                 Controls.Add(star);
             }
 
@@ -1045,6 +1856,7 @@ namespace TwinPix
             Controls.Add(Rb);
 
             string tipText = e.FullPath + "\r\n" + Util.FormatSize(e.Size)
+                             + (e.Dimensions.Length > 0 ? "\r\n" + e.Dimensions + " pixels" : "")
                              + "\r\nModified " + e.Modified.ToString("yyyy-MM-dd HH:mm:ss")
                              + (string.IsNullOrEmpty(e.Hash) ? "" : "\r\nMD5 " + e.Hash)
                              + "\r\n\r\nDouble-click: open the image";
@@ -1132,10 +1944,16 @@ namespace TwinPix
             ".jpg;.jpeg;.jpe;.jfif;.png;.gif;.bmp;.tif;.tiff;.webp;.heic;.heif;.ico;.psd;.svg;.raw;.cr2;.nef;.arw;.dng;.orf;.rw2";
 
         ComboBox _cboRoot, _cboPreferred, _cboQuarantine;
+        ComboBox _cboMatch, _cboSensitivity;
         TextBox _txtExt;
         Button _btnRoot, _btnPreferred, _btnQuarantine, _btnScan;
-        CheckBox _chkRecursive, _chkContent, _chkPreserveTree, _chkTrash;
-        Label _lblQuarantine;
+        CheckBox _chkRecursive, _chkPreserveTree, _chkTrash;
+        Label _lblQuarantine, _lblSensitivity;
+
+        // Fingerprints survive from one scan to the next, and from one run of
+        // the program to the next: a second visual scan decodes almost nothing.
+        readonly FingerprintCache _fingerprints = new FingerprintCache();
+        bool _cacheLoaded;
         ListView _lv;
         ImageList _fileIcons;
         FlowLayoutPanel _cards;
@@ -1146,11 +1964,13 @@ namespace TwinPix
 
         MenuStrip _menu;
         ToolStripMenuItem _miScan, _miExport, _miMoveAll,
-                          _miKeepPreferred, _miKeepOldest, _miKeepNewest, _miKeepShortest;
+                          _miKeepPreferred, _miKeepOldest, _miKeepNewest, _miKeepShortest,
+                          _miKeepBest, _miKeepLargest;
         ToolStrip _toolbar;
         FlowLayoutPanel _keepBar;
         ToolStripButton _tsScan, _tsMoveAll, _tsExport;
-        CheckBox _chkKeepPreferred, _chkKeepOldest, _chkKeepNewest, _chkKeepShortest;
+        CheckBox _chkKeepPreferred, _chkKeepOldest, _chkKeepNewest, _chkKeepShortest,
+                 _chkKeepBest, _chkKeepLargest;
         bool _suspendRules;              // guards the check boxes against echoing
         string _appliedPreferred = "";   // preferred folder the current selection used
         Timer _prefTimer;                // waits for a pause before redoing the selection
@@ -1263,7 +2083,7 @@ namespace TwinPix
                 + "\r\nFollows the Preferred folder field above.");
             _keepBar.Controls.Add(_chkKeepPreferred);
 
-            // Exactly one of the three is always ticked.
+            // Exactly one of these is always ticked.
             _chkKeepOldest = MakeCheck("Oldest", false);
             _tip.SetToolTip(_chkKeepOldest,
                 "Of the remaining copies, keep the one with the oldest date.");
@@ -1274,14 +2094,27 @@ namespace TwinPix
                 Scanner.DefaultRule == Scanner.KeepRule.ShortestPath);
             _tip.SetToolTip(_chkKeepShortest,
                 "Of the remaining copies, keep the one closest to the scanned folder.");
+            // The two that matter once copies no longer share a size: visual
+            // matching puts a thumbnail and its original in the same group.
+            _chkKeepBest = MakeCheck("Best resolution", false);
+            _tip.SetToolTip(_chkKeepBest,
+                "Of the remaining copies, keep the one with the most pixels,"
+                + "\r\nthen the heaviest. The closest thing to the original.");
+            _chkKeepLargest = MakeCheck("Largest file", false);
+            _tip.SetToolTip(_chkKeepLargest,
+                "Of the remaining copies, keep the heaviest file.");
             _keepBar.Controls.Add(_chkKeepOldest);
             _keepBar.Controls.Add(_chkKeepNewest);
             _keepBar.Controls.Add(_chkKeepShortest);
+            _keepBar.Controls.Add(_chkKeepBest);
+            _keepBar.Controls.Add(_chkKeepLargest);
 
             _chkKeepPreferred.CheckedChanged += delegate { RuleChanged(null); };
             _chkKeepOldest.CheckedChanged += delegate { RuleChanged(_chkKeepOldest); };
             _chkKeepNewest.CheckedChanged += delegate { RuleChanged(_chkKeepNewest); };
             _chkKeepShortest.CheckedChanged += delegate { RuleChanged(_chkKeepShortest); };
+            _chkKeepBest.CheckedChanged += delegate { RuleChanged(_chkKeepBest); };
+            _chkKeepLargest.CheckedChanged += delegate { RuleChanged(_chkKeepLargest); };
 
             leftPanel.Controls.Add(_keepBar);
 
@@ -1423,15 +2256,42 @@ namespace TwinPix
             _tip.SetToolTip(_chkRecursive,
                 "Also look inside the subfolders."
                 + "\r\nChanging this searches the folder again.");
-            _chkContent = MakeCheck("&Check content (MD5)", false);
-            _tip.SetToolTip(_chkContent,
-                "Slower: confirms the files really are identical."
-                + "\r\nChanging this searches the folder again.");
-            // Both change what a scan finds, so the list is rebuilt on the spot.
             _chkRecursive.CheckedChanged += delegate { ScanOptionChanged(); };
-            _chkContent.CheckedChanged += delegate { ScanOptionChanged(); };
             opts.Controls.Add(_chkRecursive);
-            opts.Controls.Add(_chkContent);
+
+            // What counts as a duplicate. Each entry costs more than the one
+            // above it, and finds what the one above it cannot.
+            opts.Controls.Add(NewInlineLabel("Matc&hing:"));
+            _cboMatch = NewOptionCombo(250);
+            _cboMatch.Items.AddRange(new object[] {
+                "Name + size (fastest)",
+                "Same bytes (MD5)",
+                "Same picture (visual)" });
+            _cboMatch.SelectedIndex = 0;
+            _tip.SetToolTip(_cboMatch,
+                "Name + size: groups files of the same size and extension.\r\n"
+                + "Same bytes: confirms with an MD5 of the whole file.\r\n"
+                + "Same picture: finds the same image again whatever its size,\r\n"
+                + "format or quality - resized, re-saved or converted copies.\r\n\r\n"
+                + "Changing this searches the folder again.");
+            _cboMatch.SelectedIndexChanged += delegate { MatchModeChanged(); };
+            opts.Controls.Add(_cboMatch);
+
+            _lblSensitivity = NewInlineLabel("Se&nsitivity:");
+            opts.Controls.Add(_lblSensitivity);
+            _cboSensitivity = NewOptionCombo(210);
+            _cboSensitivity.Items.AddRange(new object[] {
+                "Strict - re-saved copies",
+                "Normal",
+                "Loose - lightly edited" });
+            _cboSensitivity.SelectedIndex = 1;
+            _tip.SetToolTip(_cboSensitivity,
+                "How far apart two pictures may look and still count as the same."
+                + "\r\nLoose finds more, and is likelier to put two different"
+                + "\r\nphotographs of the same scene in one group."
+                + "\r\n\r\nVisual matching only.");
+            _cboSensitivity.SelectedIndexChanged += delegate { ScanOptionChanged(); };
+            opts.Controls.Add(_cboSensitivity);
             top.Controls.Add(opts, 0, 2);
             top.SetColumnSpan(opts, 4);
 
@@ -1495,9 +2355,14 @@ namespace TwinPix
                 Keys.None, delegate { _chkKeepNewest.Checked = true; });
             _miKeepShortest = NewMenuItem("Then keep the &shortest path",
                 Keys.None, delegate { _chkKeepShortest.Checked = true; });
+            _miKeepBest = NewMenuItem("Then keep the &best resolution",
+                Keys.None, delegate { _chkKeepBest.Checked = true; });
+            _miKeepLargest = NewMenuItem("Then keep the &largest file",
+                Keys.None, delegate { _chkKeepLargest.Checked = true; });
             mEdit.DropDownItems.AddRange(new ToolStripItem[] {
                 _miKeepPreferred, new ToolStripSeparator(),
-                _miKeepOldest, _miKeepNewest, _miKeepShortest });
+                _miKeepOldest, _miKeepNewest, _miKeepShortest,
+                _miKeepBest, _miKeepLargest });
 
             var mHelp = new ToolStripMenuItem("&Help");
             mHelp.DropDownItems.Add(NewMenuItem("&About TwinPix...", Keys.None,
@@ -1524,6 +2389,8 @@ namespace TwinPix
 
             SyncRuleMenu();
             TrashModeChanged();
+            _cboSensitivity.Enabled = false;      // visual matching only
+            _lblSensitivity.Enabled = false;
             EnableActions(false);
         }
 
@@ -1628,8 +2495,9 @@ namespace TwinPix
         void ShowAbout()
         {
             Native.Show(this, "About TwinPix", "TwinPix " + AppVersion,
-                "Finds duplicate images by name, size and extension, then moves the copies "
-                + "you do not keep to a folder of your choice.\r\n\r\n"
+                "Finds duplicate images - by size and extension, by content, or by "
+                + "what the picture actually looks like - then moves the copies you "
+                + "do not keep to a folder of your choice or to the Recycle Bin.\r\n\r\n"
                 + "Built with the C# compiler shipped with Windows.",
                 MessageBoxButtons.OK, Native.DialogIcon.Information);
         }
@@ -1704,6 +2572,25 @@ namespace TwinPix
             b.Margin = new Padding(3, 4, 3, 4);
             b.Click += onClick;
             return b;
+        }
+
+        /// <summary>A caption sitting on the same line as the control it names.</summary>
+        static Label NewInlineLabel(string text)
+        {
+            var l = new Label();
+            l.Text = text;
+            l.AutoSize = true;
+            l.Margin = new Padding(14, 8, 2, 0);
+            return l;
+        }
+
+        static ComboBox NewOptionCombo(int width)
+        {
+            var c = new ComboBox();
+            c.DropDownStyle = ComboBoxStyle.DropDownList;
+            c.Width = width;
+            c.Margin = new Padding(3, 4, 6, 4);
+            return c;
         }
 
         CheckBox MakeCheck(string text, bool check)
@@ -1785,7 +2672,20 @@ namespace TwinPix
             o.Root = root;
             o.Preferred = pref;
             o.Recursive = _chkRecursive.Checked;
-            o.CompareContent = _chkContent.Checked;
+            o.Mode = SelectedMode;
+            o.MaxDistance = SelectedDistance;
+            if (o.Mode == MatchMode.Visual)
+            {
+                // Read from disk once per run, and only when it is of use.
+                if (!_cacheLoaded)
+                {
+                    Cursor = Cursors.WaitCursor;
+                    _fingerprints.Load();
+                    Cursor = Cursors.Default;
+                    _cacheLoaded = true;
+                }
+                o.Cache = _fingerprints;
+            }
             foreach (string raw in _txtExt.Text.Split(new char[] { ';', ',', ' ' },
                                                       StringSplitOptions.RemoveEmptyEntries))
             {
@@ -1817,7 +2717,12 @@ namespace TwinPix
             _worker.WorkerSupportsCancellation = true;
             _worker.DoWork += delegate(object s, DoWorkEventArgs e)
             {
-                e.Result = Scanner.Scan(o, (BackgroundWorker)s);
+                var self = (BackgroundWorker)s;
+                e.Result = Scanner.Scan(o, self);
+                // Scan() returns what it has when it is stopped; saying so here
+                // is what makes RunWorkerCompleted report a cancellation rather
+                // than an empty result.
+                if (self.CancellationPending) e.Cancel = true;
             };
             _worker.ProgressChanged += delegate(object s, ProgressChangedEventArgs e)
             {
@@ -1847,14 +2752,27 @@ namespace TwinPix
                 _groups = res.Groups;
                 FillGroups();
                 ApplyRule();          // honour whatever is ticked in the Keep bar
-                _statusLabel.Text = res.FilesScanned + " image(s) scanned - "
-                                  + _groups.Count + " duplicate group(s)"
-                                  + (res.Errors > 0 ? " - " + res.Errors + " unreadable item(s)" : "");
+
+                string report = res.FilesScanned + " image(s) scanned - "
+                              + _groups.Count + " duplicate group(s)";
+                if (o.Mode == MatchMode.Visual)
+                {
+                    report += " - " + res.Fingerprinted + " fingerprinted";
+                    if (res.FromCache > 0) report += ", " + res.FromCache + " from cache";
+                    if (res.Skipped > 0) report += " - " + res.Skipped + " too small or too plain";
+                    _fingerprints.Save();
+                }
+                if (res.Errors > 0) report += " - " + res.Errors + " unreadable item(s)";
+                _statusLabel.Text = report;
+
                 EnableActions(_groups.Count > 0);
                 if (_groups.Count == 0)
                     Native.Show(this, "TwinPix", "No duplicates found",
-                                "No two images share the same name, size and extension "
-                                + "in this folder.",
+                                o.Mode == MatchMode.Visual
+                                ? "No two images in this folder look like the same picture.\r\n\r\n"
+                                  + "A looser sensitivity finds copies that were cropped or retouched."
+                                : "No two images share the same name, size and extension "
+                                  + "in this folder.",
                                 MessageBoxButtons.OK, Native.DialogIcon.Information);
             };
             _worker.RunWorkerAsync();
@@ -1959,15 +2877,23 @@ namespace TwinPix
                 return;
             }
             // the panel is narrow by default, so the title stays short
-            _lblGroupTitle.Text = Util.FormatSize(g.Size) + " " + g.Extension
+            string sizes = g.SizesDiffer
+                         ? Util.FormatSize(g.SizeMin) + " to " + Util.FormatSize(g.Size)
+                         : Util.FormatSize(g.Size);
+            _lblGroupTitle.Text = sizes + " " + g.Extension
                                 + "  -  " + g.Files.Count + " files";
-            _tip.SetToolTip(_lblGroupTitle, g.Files.Count + " files of exactly "
-                            + Util.FormatSize(g.Size) + " with the " + g.Extension + " extension"
-                            + "\r\nClick an image to mark it as the one to keep.");
+            _tip.SetToolTip(_lblGroupTitle,
+                g.Visual
+                ? g.Files.Count + " files showing the same picture, " + sizes
+                  + "\r\nThe copies may differ in size, format and quality."
+                  + "\r\nClick an image to mark it as the one to keep."
+                : g.Files.Count + " files of exactly " + Util.FormatSize(g.Size)
+                  + " with the " + g.Extension + " extension"
+                  + "\r\nClick an image to mark it as the one to keep.");
             _cards.SuspendLayout();
             _suspend = true;
             foreach (var f in g.Files)
-                _cards.Controls.Add(new FileCard(f, CardKeepChanged, _tip));
+                _cards.Controls.Add(new FileCard(f, g.Visual, CardKeepChanged, _tip));
             _suspend = false;
             _cards.ResumeLayout();
         }
@@ -2014,20 +2940,31 @@ namespace TwinPix
             }
         }
 
-        /// <summary>The rule ticked in the bar, one of the three being always on.</summary>
+        /// <summary>The rule boxes, exactly one of which is always ticked.</summary>
+        CheckBox[] RuleChecks
+        {
+            get
+            {
+                return new CheckBox[] { _chkKeepOldest, _chkKeepNewest, _chkKeepShortest,
+                                        _chkKeepBest, _chkKeepLargest };
+            }
+        }
+
         Scanner.KeepRule CurrentRule
         {
             get
             {
                 if (_chkKeepOldest.Checked) return Scanner.KeepRule.Oldest;
                 if (_chkKeepNewest.Checked) return Scanner.KeepRule.Newest;
+                if (_chkKeepBest.Checked) return Scanner.KeepRule.BestResolution;
+                if (_chkKeepLargest.Checked) return Scanner.KeepRule.LargestFile;
                 return Scanner.KeepRule.ShortestPath;
             }
         }
 
         /// <summary>
-        /// Keeps the three rule boxes mutually exclusive - and never all three
-        /// off - then re-applies the selection to every group.
+        /// Keeps the rule boxes mutually exclusive - and never all of them off
+        /// - then re-applies the selection to every group.
         /// </summary>
         void RuleChanged(CheckBox source)
         {
@@ -2043,9 +2980,8 @@ namespace TwinPix
                     }
                     else
                     {
-                        if (source != _chkKeepOldest) _chkKeepOldest.Checked = false;
-                        if (source != _chkKeepNewest) _chkKeepNewest.Checked = false;
-                        if (source != _chkKeepShortest) _chkKeepShortest.Checked = false;
+                        foreach (CheckBox c in RuleChecks)
+                            if (c != source) c.Checked = false;
                     }
                 }
                 SyncRuleMenu();
@@ -2053,6 +2989,49 @@ namespace TwinPix
             finally { _suspendRules = false; }
 
             ApplyRule();
+        }
+
+        /// <summary>
+        /// Visual matching puts copies of different sizes in one group, where
+        /// "shortest path" says nothing useful, so the rule that keeps the best
+        /// copy is turned on with it. The list is then rebuilt.
+        /// </summary>
+        void MatchModeChanged()
+        {
+            bool visual = SelectedMode == MatchMode.Visual;
+            _cboSensitivity.Enabled = visual;
+            _lblSensitivity.Enabled = visual;
+            if (visual && !_chkKeepBest.Checked) _chkKeepBest.Checked = true;
+            ScanOptionChanged();
+        }
+
+        MatchMode SelectedMode
+        {
+            get
+            {
+                if (_cboMatch == null) return MatchMode.NameSize;
+                switch (_cboMatch.SelectedIndex)
+                {
+                    case 1: return MatchMode.Content;
+                    case 2: return MatchMode.Visual;
+                    default: return MatchMode.NameSize;
+                }
+            }
+        }
+
+        /// <summary>Bits out of 64 that two copies may differ by.</summary>
+        int SelectedDistance
+        {
+            get
+            {
+                if (_cboSensitivity == null) return 6;
+                switch (_cboSensitivity.SelectedIndex)
+                {
+                    case 0: return 3;       // a re-saved or resized copy
+                    case 2: return 10;      // cropped edges, a light retouch
+                    default: return 6;
+                }
+            }
         }
 
         /// <summary>
@@ -2108,6 +3087,8 @@ namespace TwinPix
             _miKeepOldest.Checked = _chkKeepOldest.Checked;
             _miKeepNewest.Checked = _chkKeepNewest.Checked;
             _miKeepShortest.Checked = _chkKeepShortest.Checked;
+            _miKeepBest.Checked = _chkKeepBest.Checked;
+            _miKeepLargest.Checked = _chkKeepLargest.Checked;
         }
 
         /// <summary>Applies the current rule to every group, always.</summary>
@@ -2310,7 +3291,7 @@ namespace TwinPix
             // drop groups that no longer hold duplicates
             var remaining = new List<DupGroup>();
             foreach (var g in _groups)
-                if (g.Files.Count > 1) remaining.Add(g);
+                if (g.Files.Count > 1) { g.Recompute(); remaining.Add(g); }
             _groups = remaining;
 
             FillGroups();
@@ -2341,7 +3322,7 @@ namespace TwinPix
                 try
                 {
                     var sb = new StringBuilder();
-                    sb.AppendLine("Group;File;Folder;Size (bytes);Modified;Action");
+                    sb.AppendLine("Group;File;Folder;Size (bytes);Dimensions;Modified;Action");
                     int n = 0;
                     foreach (var g in _groups)
                     {
@@ -2354,6 +3335,7 @@ namespace TwinPix
                                 Csv(f.FileName),
                                 Csv(f.DirectoryPath),
                                 f.Size.ToString(CultureInfo.InvariantCulture),
+                                f.Dimensions,
                                 f.Modified.ToString("yyyy-MM-dd HH:mm:ss"),
                                 f.Keep ? "KEEP" : "duplicate"
                             }));
@@ -2476,6 +3458,7 @@ namespace TwinPix
         {
             if (_prefTimer != null) { _prefTimer.Stop(); _prefTimer.Dispose(); _prefTimer = null; }
             if (_worker != null && _worker.IsBusy) _worker.CancelAsync();
+            if (_cacheLoaded) _fingerprints.Save();
             SavePlacement();
             _history.Add(KeyScan, _cboRoot.Text);
             _history.Add(KeyPreferred, _cboPreferred.Text);
