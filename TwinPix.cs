@@ -1848,7 +1848,7 @@ namespace TwinPix
         public FileEntry Entry;
         public RadioButton Rb;
         readonly PictureBox _pic;
-        readonly Label _lblName, _lblDir, _lblInfo;
+        readonly Label _lblName, _lblDir, _lblInfo, _badge;
 
         public FileCard(FileEntry e, bool visual, EventHandler onKeepChanged, ToolTip tip)
         {
@@ -1870,6 +1870,26 @@ namespace TwinPix
             _pic.BackColor = Color.FromArgb(244, 244, 244);
             _pic.Cursor = Cursors.Hand;
             Controls.Add(_pic);
+
+            // The "kept" check mark: a real control, added after the picture
+            // so it paints on top of it, instead of a shape drawn underneath
+            // in OnPaint (which the picture would otherwise cover).
+            _badge = new Label();
+            _badge.Size = new Size(22, 22);
+            _badge.Location = new Point(_pic.Right - 16, _pic.Top - 6);
+            _badge.BackColor = Util.Accent;
+            _badge.ForeColor = Color.White;
+            _badge.Font = new Font(Util.UiFont.FontFamily, 10f, FontStyle.Bold);
+            _badge.TextAlign = ContentAlignment.MiddleCenter;
+            _badge.Text = "✓";
+            _badge.Visible = false;
+            using (var gp = new System.Drawing.Drawing2D.GraphicsPath())
+            {
+                gp.AddEllipse(0, 0, _badge.Width, _badge.Height);
+                _badge.Region = new Region(gp);
+            }
+            Controls.Add(_badge);
+            _badge.BringToFront();
 
             _lblName = new Label();
             _lblName.Location = new Point(8, 154);
@@ -2006,11 +2026,12 @@ namespace TwinPix
             Rb.Text = keep ? "Keeping this file" : "Keep this file";
             Rb.ForeColor = keep ? Color.White : SystemColors.ControlText;
             Rb.Font = keep ? Util.UiFontBold : Util.UiFont;
+            _badge.Visible = keep;
             Invalidate();
         }
 
-        /// <summary>Accent border, thicker while kept, plus a check badge over
-        /// the thumbnail - drawn by hand since Panel has no colored border.</summary>
+        /// <summary>Accent border, thicker while kept - drawn by hand since
+        /// Panel has no colored-border property of its own.</summary>
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
@@ -2023,18 +2044,6 @@ namespace TwinPix
             using (var path = RoundedRect(rect, 8))
             using (var pen = new Pen(keep ? Util.Accent : Util.BorderGray, w))
                 g.DrawPath(pen, path);
-
-            if (keep)
-            {
-                var badge = new Rectangle(_pic.Right - 14, _pic.Top - 6, 22, 22);
-                using (var brush = new SolidBrush(Util.Accent))
-                    g.FillEllipse(brush, badge);
-                using (var pen = new Pen(Color.White, 2f) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round })
-                {
-                    g.DrawLine(pen, badge.X + 5, badge.Y + 11, badge.X + 9, badge.Y + 15);
-                    g.DrawLine(pen, badge.X + 9, badge.Y + 15, badge.X + 17, badge.Y + 6);
-                }
-            }
         }
 
         static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle r, int radius)
@@ -2334,7 +2343,7 @@ namespace TwinPix
                 + "\r\nThey can be restored from there; no destination folder is needed.");
             _chkTrash.Enabled = Native.IsWindows;
             _chkTrash.CheckedChanged += delegate { TrashModeChanged(); };
-            bottom.Controls.Add(_chkTrash, 2, 1);
+            bottom.Controls.Add(_chkTrash, 3, 1);
 
             destination.Controls.Add(bottom);
             Controls.Add(destination);
