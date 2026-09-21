@@ -33,9 +33,80 @@ namespace TwinPix
         [STAThread]
         public static void Main()
         {
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MainForm());
+            AppDomain.CurrentDomain.UnhandledException +=
+                delegate(object sender, UnhandledExceptionEventArgs e)
+                {
+                    Report(e.ExceptionObject as Exception, "TwinPix - unhandled error");
+                };
+            Application.ThreadException +=
+                delegate(object sender, System.Threading.ThreadExceptionEventArgs e)
+                {
+                    Report(e.Exception, "TwinPix - unexpected error");
+                };
+
+            try
+            {
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                Application.Run(new MainForm());
+            }
+            catch (Exception ex)
+            {
+                Report(ex, "TwinPix could not start");
+            }
+        }
+
+        /// <summary>
+        /// Writes to the first location that accepts it: the settings folder,
+        /// then the folder of the executable, then the temporary folder.
+        /// Returns the file written, or null when none worked.
+        /// </summary>
+        static string Append(string fileName, string text)
+        {
+            string[] candidates = new string[3];
+            try
+            {
+                candidates[0] = Path.Combine(Environment.GetFolderPath(
+                    Environment.SpecialFolder.ApplicationData), "TwinPix");
+            }
+            catch { }
+            try { candidates[1] = Path.GetDirectoryName(Application.ExecutablePath); }
+            catch { }
+            try { candidates[2] = Path.GetTempPath(); }
+            catch { }
+
+            for (int i = 0; i < candidates.Length; i++)
+            {
+                if (string.IsNullOrEmpty(candidates[i])) continue;
+                try
+                {
+                    if (!Directory.Exists(candidates[i])) Directory.CreateDirectory(candidates[i]);
+                    string path = Path.Combine(candidates[i], fileName);
+                    File.AppendAllText(path, text);
+                    return path;
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Shows a failure and appends it to %APPDATA%\TwinPix\startup-error.txt,
+        /// so a window that never appears still leaves a trace. Deliberately a
+        /// plain message box: it must work even when the richer dialog cannot.
+        /// </summary>
+        static void Report(Exception ex, string title)
+        {
+            string text = ex == null ? "Unknown error." : ex.ToString();
+            string written = Append("startup-error.txt",
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + Environment.NewLine
+                + text + Environment.NewLine + Environment.NewLine);
+
+            string shown = text + Environment.NewLine + Environment.NewLine
+                         + (written == null ? "(this report could not be saved to disk)"
+                                            : "Saved to: " + written);
+            try { MessageBox.Show(shown, title, MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            catch { }
         }
     }
 
@@ -968,6 +1039,8 @@ namespace TwinPix
         FlowLayoutPanel _cards;
         Label _lblGroupTitle;
         SplitContainer _split;
+        GroupBox _sourceBox, _destBox;
+        TableLayoutPanel _sourceGrid, _destGrid;
 
         MenuStrip _menu;
         ToolStripMenuItem _miScan, _miExport, _miMoveGroup, _miMoveAll,
@@ -1113,8 +1186,10 @@ namespace TwinPix
             rightPanel.Controls.Add(_lblGroupTitle);
 
             split.Panel2.Controls.Add(rightPanel);
-            split.Panel1MinSize = 320;
-            split.Panel2MinSize = 244;       // one thumbnail card plus its scrollbar
+            // Panel1MinSize / Panel2MinSize are NOT set here: the container is
+            // still at its default 150 px, and Windows validates them against
+            // the current width and splitter position. They are applied in
+            // ApplySplitLayout(), once the window has its real size.
 
             // The centre area sits in a padded host so the two panels keep the
             // same margin from the window edge as the bands above and below.
@@ -1126,14 +1201,14 @@ namespace TwinPix
 
             // ----- destination band (docked bottom, added before the top ones)
             var destination = new GroupBox();
+            _destBox = destination;
             destination.Text = "Destination";
             destination.Dock = DockStyle.Bottom;
-            destination.AutoSize = true;
-            destination.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             destination.Padding = new Padding(8, 2, 8, 6);
-            destination.Margin = new Padding(Util.SideMargin, 0, Util.SideMargin, 0);
+            destination.Height = 80;            // replaced in OnLoad by the real content height
 
             var bottom = NewFieldGrid();
+            _destGrid = bottom;
             bottom.Controls.Add(MakeLabel("&Move duplicates to:"), 0, 0);
             _cboQuarantine = MakeCombo(KeyDestination);
             _tip.SetToolTip(_cboQuarantine, "Recently used folders are kept in the drop-down list.");
@@ -1150,13 +1225,14 @@ namespace TwinPix
 
             // ----- source band
             var source = new GroupBox();
+            _sourceBox = source;
             source.Text = "Source";
             source.Dock = DockStyle.Top;
-            source.AutoSize = true;
-            source.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             source.Padding = new Padding(8, 2, 8, 6);
+            source.Height = 200;                // replaced in OnLoad by the real content height
 
             var top = NewFieldGrid();
+            _sourceGrid = top;
             top.Controls.Add(MakeLabel("&Folder to scan:"), 0, 0);
             _cboRoot = MakeCombo(KeyScan);
             _tip.SetToolTip(_cboRoot, "Recently used folders are kept in the drop-down list.");
@@ -1279,6 +1355,32 @@ namespace TwinPix
             Controls.Add(_status);
 
             EnableActions(false);
+        }
+
+        /// <summary>
+        /// Gives each group box the height its content ended up needing. An
+        /// auto-sizing GroupBox wrapped around a docked auto-sizing grid can
+        /// send the .NET Framework layout engine into a loop, so the size is
+        /// taken once, after the first layout pass.
+        /// </summary>
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            FitGroupBox(_sourceBox, _sourceGrid);
+            FitGroupBox(_destBox, _destGrid);
+
+            // the option check boxes wrap when the window narrows, which changes
+            // the height the band needs
+            _sourceGrid.SizeChanged += delegate { FitGroupBox(_sourceBox, _sourceGrid); };
+            _destGrid.SizeChanged += delegate { FitGroupBox(_destBox, _destGrid); };
+        }
+
+        static void FitGroupBox(GroupBox box, Control content)
+        {
+            if (box == null || content == null) return;
+            int inner = Math.Max(content.Height, content.PreferredSize.Height);
+            int needed = inner + box.Padding.Vertical + 22;            // 22: the caption band
+            if (needed > 0 && needed != box.Height) box.Height = needed;
         }
 
         /// <summary>The four-column grid both bands use for their fields.</summary>
@@ -1985,11 +2087,42 @@ namespace TwinPix
             Native.SetCueBanner(_cboPreferred, "Optional - copies found here are kept");
             Native.SetCueBanner(_cboQuarantine, "Where the duplicates are moved");
 
-            int wanted = (int)(_split.Width * ListWidthRatio);
-            int max = _split.Width - _split.SplitterWidth - _split.Panel2MinSize;
-            if (wanted > max) wanted = max;
-            if (wanted < _split.Panel1MinSize) wanted = _split.Panel1MinSize;
-            _split.SplitterDistance = wanted;
+            ApplySplitLayout();
+        }
+
+        /// <summary>
+        /// Gives the group list three quarters of the width. The minimums are
+        /// cleared first, then the position, then the minimums again: each of
+        /// the three properties is validated against the other two, and any
+        /// other order can be rejected on a narrow window.
+        /// </summary>
+        void ApplySplitLayout()
+        {
+            try
+            {
+                int width = _split.Width;
+                if (width < 100) return;
+
+                int min1 = Math.Min(320, width / 4);
+                int min2 = Math.Min(244, width / 4);    // one card plus its scrollbar
+
+                _split.Panel1MinSize = 0;
+                _split.Panel2MinSize = 0;
+
+                int wanted = (int)(width * ListWidthRatio);
+                int max = width - _split.SplitterWidth - min2;
+                if (wanted > max) wanted = max;
+                if (wanted < min1) wanted = min1;
+                if (wanted < 0) wanted = 0;
+                _split.SplitterDistance = wanted;
+
+                _split.Panel1MinSize = min1;
+                _split.Panel2MinSize = min2;
+            }
+            catch
+            {
+                // a layout detail is never worth losing the window over
+            }
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)

@@ -48,6 +48,13 @@ if exist "%MANIFEST%" (
   echo [WARN] assets\TwinPix.manifest not found - dialogs fall back to message boxes.
 )
 
+rem "build.bat nomanifest" builds without it, to check whether a manifest
+rem Windows refuses is what stops the program from starting.
+if /I "%~1"=="nomanifest" (
+  set "MANIFESTOPT="
+  echo [INFO] Manifest skipped on request.
+)
+
 "%CSC%" /nologo /target:winexe /platform:anycpu /optimize+ /warn:4 ^
   /out:"%~dp0TwinPix.exe" ^
   %ICONOPT% %MANIFESTOPT% ^
