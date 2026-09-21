@@ -1,7 +1,7 @@
 # TwinPix
 
-A Windows application (WinForms, C#) that finds **duplicate images** in a folder
-and its subfolders, shows them side by side with a preview, and lets you pick the
+A Windows application (WinForms, C#) that finds **duplicate images** — same size,
+same extension — in a folder and its subfolders, shows them side by side with a preview, and lets you pick the
 one to keep. The others are moved to a quarantine folder — nothing is ever
 deleted.
 
@@ -41,15 +41,22 @@ Equivalent manual command:
 
 ## Duplicate criteria
 
-Two images are treated as duplicates when all three of the following match:
+Two images are treated as duplicates when both of the following match:
 
-1. **the file name**, compared as it is, case aside — `photo.jpg` and
-   `PHOTO.jpg` are the same name, `photo (1).jpg` is not;
-2. **the exact size** in bytes;
-3. **the extension** (`.jpg` and `.jpeg` stay distinct).
+1. **the exact size** in bytes;
+2. **the extension**, compared without regard to case — `IMG_4471.JPG` and
+   `photo.jpg` are the same extension, `.jpg` and `.jpeg` are not.
 
-Option: *Check content (MD5)* — hashes every file in a group and splits apart
-those whose content differs. Slower, but guarantees real duplicates.
+File names play no part: two images with the same size and extension are
+grouped whatever they are called. That is a deliberately wide net, so
+*Check content (MD5)* matters here — it hashes every file of a group and splits
+apart those whose bytes differ, turning "same size by coincidence" into
+"identical file". It is slower, but it is what makes the result trustworthy on
+a large library.
+
+Because a group has no single name, the list shows the name of the file you are
+keeping (*Kept file*) and the folder it lives in (*Kept in*); both follow your
+selection.
 
 ## Usage
 
@@ -64,22 +71,45 @@ those whose content differs. Slower, but guarantees real duplicates.
    most recent entry pre-selected. Right-click a field to clear its list.
 3. **SCAN** — the list on the left shows one row per duplicate group, sorted by
    reclaimable space, and takes three quarters of the window. Click any column
-   header to sort by it (name, extension,
+   header to sort by it (kept file, extension,
    size, number of copies, reclaimable space, folder being kept); click the same
    header again to reverse the order. The active column carries a `^` or `v`
    marker.
-4. Select a group: its thumbnails appear on the right. Click a thumbnail (or
+4. Select a group: its thumbnails appear on the right, titled with the size and
+   extension shared by the files. Click a thumbnail (or
    "Keep this file") to mark the copy to keep; it turns green.
-   The *Keep automatically* buttons above the list apply a rule to every group:
-   preferred folder, oldest, newest, shortest path. The preferred folder always
-   wins over the other rules.
-5. **Move duplicates to** — enter the destination folder, then *Move duplicates
-   in group* or *Move ALL duplicates*. *Keep folder structure* recreates the
-   original relative path inside the destination, so everything can be put back
-   if needed.
+   The *Keep* check boxes above the list decide the choice made for you, and
+   always apply to **every** group at once:
+
+   - **Preferred folder** follows the field of the same name: it ticks itself as
+     soon as a folder is given and greys out when the field is emptied. While it
+     is ticked, a copy sitting in that folder is kept whatever the rule below
+     says. Untick it to ignore the folder without clearing the field.
+   - **Oldest**, **Newest** and **Shortest path** are exclusive — exactly one is
+     always active — and settle the choice between the remaining copies.
+     *Shortest path* (the copy closest to the scanned folder) is the default.
+
+   Changing any box, or pointing the preferred folder somewhere else, re-applies
+   the choice to the whole list immediately. A path typed by hand is taken into
+   account as soon as typing pauses, so the list does not re-sort at every
+   keystroke.
+5. **Move duplicates to** — enter the destination folder, then *Move ALL
+   duplicates*. *Keep folder structure* recreates the original relative path
+   inside the destination, so everything can be put back if needed.
+   *Move to trash* (unticked by default) sends the duplicates to the Windows
+   Recycle Bin instead, from where they can be restored; the destination field,
+   its *Browse* button and *Keep folder structure* are greyed out while it is
+   ticked. The whole batch goes in one shell operation, so a single *Undo* in
+   Explorer puts every file back, and Windows still asks before destroying for
+   good a file too large for the bin.
+
+*Include subfolders* and *Check content (MD5)* change what a scan finds, so
+ticking or unticking either one searches the folder again and rebuilds the list
+of duplicates on the spot. Nothing happens before the first scan, and a change
+made while a scan is running simply applies to the next one.
 
 The menu bar and the toolbar carry the same commands, with the usual shortcuts:
-F5 to scan, Ctrl+M and Ctrl+Shift+M to move, Ctrl+E to export. Every field and
+F5 to scan, Ctrl+Shift+M to move, Ctrl+E to export. Every field and
 check box has an access key (Alt+F for the folder to scan, and so on).
 
 **SCAN** is the window's default button (Enter key), which Windows outlines on
