@@ -6,6 +6,30 @@ actually looks like — shows them side by side with a preview, and lets you pic
 the one to keep. The others are moved to a quarantine folder or to the Recycle
 Bin; nothing is destroyed outright.
 
+## Project layout
+
+| File | What is in it |
+| --- | --- |
+| `TwinPix.cs` | the engine: model, fingerprints, cache, scanner, and the Win32 and helper classes |
+| `MainForm.cs` | the main window's behaviour - scanning, keep rules, moving, export |
+| `MainForm.Designer.cs` | every control of the main window and its layout |
+| `FileCard.cs` | the thumbnail card's behaviour |
+| `FileCard.Designer.cs` | the thumbnail card's layout |
+| `MainForm.resx`, `FileCard.resx` | designer resources (empty; kept for Visual Studio) |
+| `TwinPix.csproj`, `TwinPix.sln` | Visual Studio project and solution |
+
+The two `.Designer.cs` files hold nothing but control creation and property
+assignments, which is what lets Visual Studio's **Windows Forms designer** open
+`MainForm.cs` and `FileCard.cs` on the design surface (double-click either in
+the Solution Explorer). Move a button, change a caption, add a control: the
+designer rewrites the `.Designer.cs` file and leaves the rest alone. Nothing
+outside those two files creates a control, so the design surface and the running
+window can never disagree.
+
+Events added in the designer's property grid land in `MainForm.cs` or
+`FileCard.cs` as ordinary methods; the handlers already there are thin wrappers
+that call the real work, so a new button is two clicks and one line.
+
 ## Build
 
 Nothing to install: the `csc.exe` compiler shipped with Windows is enough.
@@ -15,8 +39,19 @@ build.bat
 ```
 
 The script looks for `csc.exe` in `%WINDIR%\Microsoft.NET\Framework64\v4.0.30319`
-(then the 32-bit path), compiles `TwinPix.cs` and writes `TwinPix.exe` next to
-it. The executable is self-contained and can be copied anywhere.
+(then the 32-bit path), compiles every `.cs` file next to it and writes
+`TwinPix.exe` in the same folder. The executable is self-contained and can be
+copied anywhere.
+
+`TwinPix.csproj` builds those very same sources in Visual Studio (F5, output in
+`bin\Debug`). Neither build needs the other, and the project file is there for
+the designer: the application itself still depends on nothing but the framework
+shipped with Windows.
+
+The `.resx` files are for the designer only - nothing in them is loaded at run
+time, which is why `csc.exe` does not need them. Dropping a picture on a form in
+the designer would put it in a `.resx` that `build.bat` cannot embed; keep images
+out of the designer, or build with Visual Studio from that point on.
 
 `assets\TwinPix.manifest` is applied with `/win32manifest`. It pulls in version 6
 of the common controls, which is what themes the controls and makes the Vista
@@ -40,7 +75,7 @@ set FW=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319
   /reference:PresentationCore.dll /reference:WindowsBase.dll /reference:System.Xaml.dll ^
   /reference:System.dll /reference:System.Core.dll ^
   /reference:System.Drawing.dll /reference:System.Windows.Forms.dll ^
-  /out:TwinPix.exe TwinPix.cs
+  /out:TwinPix.exe *.cs
 ```
 
 The three WPF references and `/define:WIC` are what enable the fast image
@@ -50,27 +85,18 @@ falling back to GDI+ (`build.bat nowic` does exactly that). The .NET Framework
 
 ## Duplicate criteria
 
-The *Matching* list decides what counts as a duplicate. Each setting costs more
-than the one above it and finds what the one above it cannot.
+The *Matching* list decides what counts as a duplicate.
 
-**Name + size** (the default, and the fastest). Two images are duplicates when
-both of the following match:
-
-1. **the exact size** in bytes;
-2. **the extension**, compared without regard to case — `IMG_4471.JPG` and
-   `photo.jpg` are the same extension, `.jpg` and `.jpeg` are not.
-
-File names play no part: two images with the same size and extension are grouped
-whatever they are called. That is a deliberately wide net.
-
-**Same bytes (MD5)** narrows it: every file of a group is hashed and those whose
-bytes differ are split apart, turning "same size by coincidence" into "identical
-file". Slower, and what makes the result trustworthy on a large library.
+**Same bytes (MD5)** (the default). Files are first grouped by **exact size** in
+bytes and **extension**, compared without regard to case — `IMG_4471.JPG` and
+`photo.jpg` are the same extension, `.jpg` and `.jpeg` are not. Every file of a
+group is then hashed and those whose bytes differ are split apart, so a group
+only ever holds identical files. File names play no part.
 
 **Same picture (visual)** drops the byte-level criteria entirely and compares
 what the images look like, so it finds the same photograph again after it has
 been resized, re-saved at another quality, converted to another format, stripped
-of its EXIF or turned to greyscale — cases the two settings above cannot see at
+of its EXIF or turned to greyscale — cases the byte comparison cannot see at
 all, because not one byte is shared. See below.
 
 Because a group has no single name, the list shows the name of the file you are
@@ -79,7 +105,7 @@ selection.
 
 ## Visual matching
 
-Each image is reduced to a fingerprint of 144 bytes, and only fingerprints are
+Each image is reduced to a fingerprint of 265 bytes, and only fingerprints are
 compared:
 
 - **dHash**, 64 bits — a 9×8 grey grid, one bit per "is this pixel brighter than
@@ -90,6 +116,8 @@ compared:
 - an **8×8 grey grid** — kept so that two candidates can be compared pixel by
   pixel, which is what rejects the look-alikes the two hashes agree on by
   accident.
+- an **11×11 grey grid** — the same, with about twice the points (121 instead
+  of 64). It replaces the 8×8 grid at the *Normal* sensitivity.
 
 A pair is accepted only when the hashes agree, the aspect ratio matches within
 8 %, and the grids line up. Accepted pairs are merged with a union-find, so a
@@ -98,7 +126,9 @@ the original puts all three together even if the thumbnail and the original are
 too far apart to match each other directly.
 
 *Sensitivity* sets how many of the 64 bits may differ — 3 for re-saved and
-resized copies, 6 by default, 10 for cropped or lightly retouched ones.
+resized copies, 6 by default, 10 for cropped or lightly retouched ones. At
+*Normal*, the pixel-by-pixel check also runs on the 11×11 grid rather than the
+8×8 one, which rejects more near-misses.
 
 Nothing is compared with everything: the 64 bits are cut into *k* bands, where
 *k* is the smallest power of two above the threshold. Two fingerprints that
