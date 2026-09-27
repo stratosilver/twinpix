@@ -163,30 +163,34 @@ results.
 ## Usage
 
 1. **Folder to scan** — the root of the walk (subfolders included).
-2. **Preferred folder** *(optional)* — images living there are pre-selected as the
-   ones to keep in every group.
    Every folder field is a drop-down that remembers the folders used before:
    pick one from the list, or keep typing — the path auto-completes against the
-   file system. The three lists are saved in
+   file system. The two lists are saved in
    `%APPDATA%\TwinPix\folders.txt` (which also holds the window placement) and
    are restored at the next start, with the
    most recent entry pre-selected. Right-click a field to clear its list.
-3. **SCAN** — the list on the left shows one row per duplicate group, sorted by
+2. **SCAN** — the list on the left shows one row per duplicate group, sorted by
    reclaimable space, and takes three quarters of the window. Click any column
    header to sort by it (kept file, extension,
    size, number of copies, reclaimable space, folder being kept); click the same
    header again to reverse the order. The active column carries a `^` or `v`
    marker.
+3. **Preferred folders** — below the groups, every subfolder of the scanned
+   folder is listed with the number of images it holds and how many of them sit
+   in a duplicate group. Tick a folder and the copies it holds are kept in every
+   group. Only the files directly inside a ticked folder count, not those of its
+   subfolders — tick those too if they should count. The ticks survive a new
+   scan of the same folder.
 4. Select a group: its thumbnails appear on the right, titled with the size and
    extension shared by the files. Click a thumbnail (or
    "Keep this file") to mark the copy to keep; it turns green.
    The *Keep* check boxes above the list decide the choice made for you, and
    always apply to **every** group at once:
 
-   - **Preferred folder** follows the field of the same name: it ticks itself as
-     soon as a folder is given and greys out when the field is emptied. While it
-     is ticked, a copy sitting in that folder is kept whatever the rule below
-     says. Untick it to ignore the folder without clearing the field.
+   - **Preferred folders** follows the list of the same name: it ticks itself as
+     soon as a folder is ticked there and greys out when none is. While it is
+     ticked, a copy sitting in a ticked folder is kept whatever the rule below
+     says. Untick it to ignore the folders without clearing the ticks.
    - **Oldest**, **Newest**, **Shortest path**, **Best resolution** and
      **Largest file** are exclusive — exactly one is always active — and settle
      the choice between the remaining copies. *Shortest path* (the copy closest
@@ -194,12 +198,10 @@ results.
      *Best resolution*, which is the one that makes sense when the copies no
      longer share a size.
 
-   Changing any box, or pointing the preferred folder somewhere else, re-applies
-   the choice to the whole list immediately. A path typed by hand is taken into
-   account as soon as typing pauses, so the list does not re-sort at every
-   keystroke.
-5. **Move duplicates to** — enter the destination folder, then *Move ALL
-   duplicates*. *Keep folder structure* recreates the original relative path
+   Changing any box, or ticking a preferred folder, re-applies the choice to the
+   whole list immediately.
+5. **Move duplicates to** — enter the destination folder, then **MOVE ALL**,
+   at the bottom right. *Keep folder structure* recreates the original relative path
    inside the destination, so everything can be put back if needed.
    *Move to trash* (unticked by default) sends the duplicates to the Windows
    Recycle Bin instead, from where they can be restored; the destination field,
@@ -213,18 +215,18 @@ changing any of them searches the folder again and rebuilds the list of
 duplicates on the spot. Nothing happens before the first scan, and a change made
 while a scan is running simply applies to the next one.
 
-The menu bar and the toolbar carry the same commands, with the usual shortcuts:
+The *File* menu carries the same commands, with the usual shortcuts:
 F5 to scan, Ctrl+Shift+M to move, Ctrl+E to export. Every field and
 check box has an access key (Alt+F for the folder to scan, and so on).
 
 **SCAN** is the window's default button (Enter key), which Windows outlines on
-its own; it reads *CANCEL* while a scan runs. It and **Move ALL duplicates**
+its own; it reads *CANCEL* while a scan runs. It and **MOVE ALL**
 carry a bold label to mark them as the primary actions. They are deliberately
 left in the system's own button style: giving a button a custom background
 colour makes Windows drop the visual-style rendering and fall back to a
 square-cornered classic button, which no longer matches its neighbours.
 
-*Export CSV* writes the full inventory (group, file, folder, size, date, action)
+*File > Export list to CSV* writes the full inventory (group, file, folder, size, date, action)
 without changing anything.
 
 Extras: double-click a thumbnail to open the image in the default viewer;

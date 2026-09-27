@@ -235,7 +235,6 @@ namespace TwinPix
     public class ScanOptions
     {
         public string Root = "";
-        public string Preferred = "";
         public bool Recursive = true;
         public MatchMode Mode = MatchMode.Content;
 
@@ -254,9 +253,17 @@ namespace TwinPix
         public HashSet<string> Extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     }
 
+    /// <summary>One folder the scan went through, and how many images it holds.</summary>
+    public class ScannedFolder
+    {
+        public string Path;
+        public int Images;
+    }
+
     public class ScanResult
     {
         public List<DupGroup> Groups = new List<DupGroup>();
+        public List<ScannedFolder> Folders = new List<ScannedFolder>();   // every folder walked, root first
         public int FilesScanned;
         public int Errors;
         public int Fingerprinted;    // images actually decoded this time
@@ -819,6 +826,7 @@ namespace TwinPix
             try { files = Directory.GetFiles(dir); }
             catch { res.Errors++; }
 
+            int images = 0;
             if (files != null)
             {
                 for (int i = 0; i < files.Length; i++)
@@ -826,10 +834,11 @@ namespace TwinPix
                     string ext = "";
                     try { ext = Path.GetExtension(files[i]); }
                     catch { continue; }
-                    if (ext != null && o.Extensions.Contains(ext)) acc.Add(files[i]);
+                    if (ext != null && o.Extensions.Contains(ext)) { acc.Add(files[i]); images++; }
                 }
                 if (bw != null) bw.ReportProgress(0, "Scanning: " + acc.Count + " image(s) found...");
             }
+            res.Folders.Add(new ScannedFolder { Path = dir, Images = images });
 
             if (!o.Recursive) return;
 
@@ -860,7 +869,6 @@ namespace TwinPix
             catch { res.Errors++; return null; }
             try { e.Modified = fi.LastWriteTime; }
             catch { e.Modified = DateTime.MinValue; }
-            e.InPreferred = IsUnder(fi.FullName, o.Preferred);
             return e;
         }
 
@@ -883,8 +891,9 @@ namespace TwinPix
                     return string.Compare(a.FullPath, b.FullPath, StringComparison.OrdinalIgnoreCase);
                 });
                 g.Recompute();
+                // the preferred folders are applied by the window, once the scan is back
                 AutoSelect(g, o.Mode == MatchMode.Visual ? KeepRule.BestResolution : DefaultRule,
-                           o.Preferred.Length > 0);
+                           false);
             }
 
             groups.Sort(delegate(DupGroup a, DupGroup b)
@@ -1363,6 +1372,14 @@ namespace TwinPix
         // ---- edit / combo ----------------------------------------------
         const int EM_SETCUEBANNER = 0x1501;
         const int CB_SETCUEBANNER = 0x1703;
+        const int CB_SETITEMHEIGHT = 0x0153;
+        const int EM_SETRECT = 0x00B3;
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct RECT
+        {
+            public int Left, Top, Right, Bottom;
+        }
 
         // ---- shell ------------------------------------------------------
         const uint SHGFI_ICON = 0x000000100;
@@ -1415,6 +1432,9 @@ namespace TwinPix
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, ref HDITEM lParam);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, ref RECT lParam);
 
         [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
         static extern IntPtr SHGetFileInfo(string path, uint fileAttributes, ref SHFILEINFO psfi,
@@ -1511,6 +1531,39 @@ namespace TwinPix
             {
                 if (c is ComboBox) SendMessage(c.Handle, CB_SETCUEBANNER, IntPtr.Zero, text);
                 else if (c is TextBox) SendMessage(c.Handle, EM_SETCUEBANNER, IntPtr.Zero, text);
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Makes a combo box taller than its font asks for: the height of its
+        /// selection field is set directly, the whole box being about six
+        /// pixels more than <paramref name="fieldHeight"/>.
+        /// </summary>
+        public static void SetComboFieldHeight(ComboBox c, int fieldHeight)
+        {
+            if (!IsWindows || c == null || !c.IsHandleCreated) return;
+            try { SendMessage(c.Handle, CB_SETITEMHEIGHT, (IntPtr)(-1), (IntPtr)fieldHeight); }
+            catch { }
+        }
+
+        /// <summary>
+        /// Centres the line of a multi-line text box used as a tall one-line
+        /// field. The formatting rectangle is reset whenever the box is resized,
+        /// so this is called again from its SizeChanged.
+        /// </summary>
+        public static void CenterSingleLine(TextBox t)
+        {
+            if (!IsWindows || t == null || !t.IsHandleCreated || !t.Multiline) return;
+            try
+            {
+                int line = TextRenderer.MeasureText("Ag", t.Font).Height;
+                var r = new RECT();
+                r.Left = 3;
+                r.Right = Math.Max(r.Left + 1, t.ClientSize.Width - 3);
+                r.Top = Math.Max(0, (t.ClientSize.Height - line) / 2);
+                r.Bottom = t.ClientSize.Height;
+                SendMessage(t.Handle, EM_SETRECT, IntPtr.Zero, ref r);
             }
             catch { }
         }

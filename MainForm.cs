@@ -27,8 +27,14 @@ namespace TwinPix
         bool _cacheLoaded;
 
         bool _suspendRules;              // guards the check boxes against echoing
-        string _appliedPreferred = "";   // preferred folder the current selection used
         bool _hasScanned;                // a scan has already filled the list at least once
+
+        // Folders ticked in the Preferred folders list, full paths. Kept apart
+        // from the list itself so a new scan of the same folder keeps the ticks.
+        readonly HashSet<string> _preferred = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        List<ScannedFolder> _folders = new List<ScannedFolder>();
+        string _foldersRoot = "";        // the scanned folder the list was built for
+        bool _fillingFolders;            // guards ItemChecked while the list is rebuilt
 
         BackgroundWorker _worker;
         List<DupGroup> _groups = new List<DupGroup>();
@@ -37,7 +43,6 @@ namespace TwinPix
 
         // Remembered folders, one list per field.
         const string KeyScan = "scan";
-        const string KeyPreferred = "preferred";
         const string KeyDestination = "destination";
         const string KeyWindow = "window";
         const string AppVersion = "1.0";
@@ -60,13 +65,6 @@ namespace TwinPix
             Icon appIcon = Util.AppIcon();
             if (appIcon != null) Icon = appIcon;
 
-            Image scanImage = SmallAppImage();
-            if (scanImage != null)
-            {
-                _tsScan.Image = scanImage;
-                _tsScan.DisplayStyle = ToolStripItemDisplayStyle.ImageAndText;
-            }
-
             _chkTrash.Enabled = Native.IsWindows;
             _progress.Visible = false;
             _cboMatch.SelectedIndex = 0;
@@ -80,7 +78,6 @@ namespace TwinPix
 
             _history.Load();
             FillCombo(_cboRoot, KeyScan);
-            FillCombo(_cboPreferred, KeyPreferred);
             FillCombo(_cboQuarantine, KeyDestination);
             RestorePlacement();
         }
@@ -106,6 +103,34 @@ namespace TwinPix
 
             // the cards follow the width of the right-hand panel
             _cards.SizeChanged += delegate { LayoutCards(); };
+
+            // the extensions field is a multi-line box kept to one centred line
+            _txtExt.SizeChanged += delegate { Native.CenterSingleLine(_txtExt); };
+            _txtExt.TextChanged += delegate { KeepOnOneLine(_txtExt); };
+        }
+
+        /// <summary>Height of the selection field of every combo box, in pixels.</summary>
+        const int ComboFieldHeight = 26;
+
+        /// <summary>
+        /// The combo boxes are made taller than their font asks for, and the
+        /// extensions box - a multi-line box so that it can be as tall - gets
+        /// its line centred. Both need a live window handle.
+        /// </summary>
+        void ApplyFieldHeights()
+        {
+            foreach (ComboBox c in new ComboBox[] { _cboRoot, _cboMatch, _cboSensitivity, _cboQuarantine })
+                Native.SetComboFieldHeight(c, ComboFieldHeight);
+            Native.CenterSingleLine(_txtExt);
+        }
+
+        /// <summary>A pasted line break becomes a separator: the field holds one line.</summary>
+        static void KeepOnOneLine(TextBox t)
+        {
+            if (t.Text.IndexOf('\r') < 0 && t.Text.IndexOf('\n') < 0) return;
+            int caret = t.SelectionStart;
+            t.Text = t.Text.Replace("\r\n", ";").Replace('\r', ';').Replace('\n', ';');
+            t.SelectionStart = Math.Min(caret, t.Text.Length);
         }
 
         // The cards always go two to a row, each half the panel's width.
@@ -149,11 +174,33 @@ namespace TwinPix
             // These need a live window handle, so they happen here.
             Native.UseExplorerTheme(_lv);
             Native.EnableDoubleBuffer(_lv);
+            Native.UseExplorerTheme(_lvFolders);
+            Native.EnableDoubleBuffer(_lvFolders);
             Native.SetCueBanner(_cboRoot, "Folder to search for duplicates");
-            Native.SetCueBanner(_cboPreferred, "Optional - copies found here are kept");
             Native.SetCueBanner(_cboQuarantine, "Where the duplicates are moved");
+            ApplyFieldHeights();
 
             ApplySplitLayout();
+            ApplyListsLayout();
+        }
+
+        /// <summary>The duplicate groups get 60 % of the left column, the folders the rest.</summary>
+        void ApplyListsLayout()
+        {
+            try
+            {
+                int h = _splitLists.Height;
+                if (h < 100) return;
+                _splitLists.Panel1MinSize = 0;
+                _splitLists.Panel2MinSize = 0;
+                _splitLists.SplitterDistance = (int)(h * 0.6);
+                _splitLists.Panel1MinSize = Math.Min(80, h / 4);
+                _splitLists.Panel2MinSize = Math.Min(80, h / 4);
+            }
+            catch
+            {
+                // a layout detail is never worth losing the window over
+            }
         }
 
         /// <summary>
@@ -193,28 +240,13 @@ namespace TwinPix
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            if (_prefTimer != null) _prefTimer.Stop();
             if (_worker != null && _worker.IsBusy) _worker.CancelAsync();
             if (_cacheLoaded) _fingerprints.Save();
             SavePlacement();
             _history.Add(KeyScan, _cboRoot.Text);
-            _history.Add(KeyPreferred, _cboPreferred.Text);
             _history.Add(KeyDestination, _cboQuarantine.Text);
             _history.Save();
             base.OnFormClosing(e);
-        }
-
-        /// <summary>16 px frame of the application icon, for the toolbar.</summary>
-        static Image SmallAppImage()
-        {
-            try
-            {
-                Icon big = Util.AppIcon();
-                if (big == null) return null;
-                using (var small = new Icon(big, new Size(16, 16)))
-                    return small.ToBitmap();
-            }
-            catch { return null; }
         }
 
         void ShowAbout()
@@ -239,7 +271,7 @@ namespace TwinPix
             _cboQuarantine.Enabled = toFolder;
             _btnQuarantine.Enabled = toFolder;
             _chkPreserveTree.Enabled = toFolder;
-            _tsMoveAll.Text = toFolder ? "Move all" : "Trash all";
+            _btnMoveAll.Text = toFolder ? "MOVE &ALL" : "TRASH &ALL";
             _miMoveAll.Text = toFolder ? "Move &all duplicates" : "Send &all duplicates to the trash";
         }
 
@@ -247,8 +279,7 @@ namespace TwinPix
         {
             _miMoveAll.Enabled = on;
             _miExport.Enabled = on;
-            _tsMoveAll.Enabled = on;
-            _tsExport.Enabled = on;
+            _btnMoveAll.Enabled = on;
             // the keep rules stay available: they are settings, not actions
         }
 
@@ -313,18 +344,8 @@ namespace TwinPix
                 return;
             }
 
-            string pref = _cboPreferred.Text.Trim();
-            if (pref.Length > 0 && !Directory.Exists(pref))
-            {
-                Native.Show(this, "TwinPix", "The preferred folder does not exist",
-                            "Correct the path, or clear the field to scan without a preferred folder.",
-                            MessageBoxButtons.OK, Native.DialogIcon.Warning);
-                return;
-            }
-
             var o = new ScanOptions();
             o.Root = root;
-            o.Preferred = pref;
             o.Recursive = _chkRecursive.Checked;
             o.Mode = SelectedMode;
             o.MaxDistance = SelectedDistance;
@@ -341,7 +362,7 @@ namespace TwinPix
                 }
                 o.Cache = _fingerprints;
             }
-            foreach (string raw in _txtExt.Text.Split(new char[] { ';', ',', ' ' },
+            foreach (string raw in _txtExt.Text.Split(new char[] { ';', ',', ' ', '\r', '\n' },
                                                       StringSplitOptions.RemoveEmptyEntries))
             {
                 string e = raw.Trim().ToLowerInvariant();
@@ -359,7 +380,6 @@ namespace TwinPix
             }
 
             RememberFolder(_cboRoot, KeyScan);
-            if (pref.Length > 0) RememberFolder(_cboPreferred, KeyPreferred);
 
             ClearResults();
             _btnScan.Text = "CANCEL";
@@ -406,7 +426,8 @@ namespace TwinPix
                 _hasScanned = true;
                 _groups = res.Groups;
                 FillGroups();
-                ApplyRule();          // honour whatever is ticked in the Keep bar
+                FillFolders(o.Root, res.Folders);
+                ApplyRule();          // honour whatever is ticked in the Keep bar and folder list
 
                 string report = res.FilesScanned + " image(s) scanned - "
                               + _groups.Count + " duplicate group(s)";
@@ -672,31 +693,6 @@ namespace TwinPix
         }
 
         /// <summary>
-        /// The Preferred folder box follows the field: ticked while a folder is
-        /// given, greyed out and clear when the field is empty. Every change to
-        /// the field also redoes the selection over the whole list, a short
-        /// pause later so a path typed by hand does not re-sort every keystroke.
-        /// </summary>
-        void PreferredFolderChanged()
-        {
-            if (_chkKeepPreferred == null) return;
-            bool given = _cboPreferred.Text.Trim().Length > 0;
-            if (_chkKeepPreferred.Enabled != given)
-            {
-                _suspendRules = true;
-                _chkKeepPreferred.Enabled = given;
-                _chkKeepPreferred.Checked = given;
-                _suspendRules = false;
-                SyncRuleMenu();
-            }
-
-            // Any change to the field changes which copy is kept, so the list is
-            // redone - after a short pause, so a path typed by hand is not
-            // re-sorted letter by letter. A folder picked or pasted lands at once.
-            if (_prefTimer != null) { _prefTimer.Stop(); _prefTimer.Start(); }
-        }
-
-        /// <summary>
         /// "Include subfolders", "Matching" and "Sensitivity" change what a scan
         /// finds, so the folder is searched again the moment one of them changes.
         /// Before the first scan there is nothing to refresh, and while a scan is
@@ -709,12 +705,151 @@ namespace TwinPix
             StartScan();
         }
 
-        /// <summary>Re-applies the selection when the folder actually changed.</summary>
-        void PreferredFolderCommitted()
+        // ---------------------- Preferred folders ---------------------
+
+        /// <summary>
+        /// Lists every folder below the scanned one, each with a box that marks it
+        /// as preferred. Ticks survive a new scan of the same folder; a different
+        /// folder starts with none.
+        /// </summary>
+        void FillFolders(string root, List<ScannedFolder> folders)
         {
-            if (_chkKeepPreferred == null) return;
-            if (_cboPreferred.Text.Trim() == _appliedPreferred) return;
+            string fullRoot = SafeFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
+            if (!string.Equals(fullRoot, _foldersRoot, StringComparison.OrdinalIgnoreCase))
+                _preferred.Clear();
+            _foldersRoot = fullRoot;
+
+            _folders = new List<ScannedFolder>();
+            foreach (var f in folders)
+            {
+                // compared with FileEntry.DirectoryPath, which is a full path
+                f.Path = SafeFullPath(f.Path).TrimEnd(Path.DirectorySeparatorChar);
+                // the scanned folder itself is not offered: preferring it would prefer everything
+                if (string.Equals(f.Path, fullRoot, StringComparison.OrdinalIgnoreCase)) continue;
+                _folders.Add(f);
+            }
+            _folders.Sort(delegate(ScannedFolder a, ScannedFolder b)
+            {
+                return string.Compare(a.Path, b.Path, StringComparison.OrdinalIgnoreCase);
+            });
+
+            // ticks on folders that are gone are dropped
+            var still = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var f in _folders) if (_preferred.Contains(f.Path)) still.Add(f.Path);
+            _preferred.Clear();
+            _preferred.UnionWith(still);
+
+            Dictionary<string, int> inGroups = FilesInGroupsPerFolder();
+
+            _fillingFolders = true;
+            _lvFolders.BeginUpdate();
+            try
+            {
+                _lvFolders.Items.Clear();
+                foreach (var f in _folders)
+                {
+                    var it = new ListViewItem(RelativeFolder(f.Path));
+                    it.SubItems.Add(f.Images.ToString(CultureInfo.InvariantCulture));
+                    int n;
+                    inGroups.TryGetValue(f.Path, out n);
+                    it.SubItems.Add(n.ToString(CultureInfo.InvariantCulture));
+                    it.Tag = f;
+                    it.Checked = _preferred.Contains(f.Path);
+                    if (n == 0) it.ForeColor = SystemColors.GrayText;
+                    _lvFolders.Items.Add(it);
+                }
+            }
+            finally
+            {
+                _lvFolders.EndUpdate();
+                _fillingFolders = false;
+            }
+            _lblFolders.Text = _folders.Count == 0
+                             ? "&Preferred folders - no subfolder"
+                             : "&Preferred folders";
+            SyncPreferredBox();
+        }
+
+        /// <summary>After a move the counts change; the ticks and the order do not.</summary>
+        void RefreshFolderCounts()
+        {
+            Dictionary<string, int> inGroups = FilesInGroupsPerFolder();
+            _lvFolders.BeginUpdate();
+            foreach (ListViewItem it in _lvFolders.Items)
+            {
+                var f = it.Tag as ScannedFolder;
+                if (f == null) continue;
+                int n;
+                inGroups.TryGetValue(f.Path, out n);
+                it.SubItems[2].Text = n.ToString(CultureInfo.InvariantCulture);
+                it.ForeColor = n == 0 ? SystemColors.GrayText : SystemColors.WindowText;
+            }
+            _lvFolders.EndUpdate();
+        }
+
+        /// <summary>How many files of the duplicate groups sit directly in each folder.</summary>
+        Dictionary<string, int> FilesInGroupsPerFolder()
+        {
+            var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var g in _groups)
+                foreach (var f in g.Files)
+                {
+                    string dir = f.DirectoryPath ?? "";
+                    int n;
+                    counts.TryGetValue(dir, out n);
+                    counts[dir] = n + 1;
+                }
+            return counts;
+        }
+
+        string RelativeFolder(string path)
+        {
+            string full = SafeFullPath(path);
+            if (_foldersRoot.Length > 0
+                && full.StartsWith(_foldersRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                return full.Substring(_foldersRoot.Length + 1);
+            return full;
+        }
+
+        static string SafeFullPath(string path)
+        {
+            try { return Path.GetFullPath(path); }
+            catch { return path ?? ""; }
+        }
+
+        /// <summary>
+        /// The Preferred folders box of the Keep bar follows the list: available
+        /// and ticked as soon as one folder is, greyed out and clear when none is.
+        /// </summary>
+        void SyncPreferredBox()
+        {
+            bool any = _preferred.Count > 0;
+            if (_chkKeepPreferred.Enabled == any) return;
+            _suspendRules = true;
+            _chkKeepPreferred.Enabled = any;
+            _chkKeepPreferred.Checked = any;
+            _suspendRules = false;
+            SyncRuleMenu();
+        }
+
+        /// <summary>One folder ticked or unticked: the selection is redone at once.</summary>
+        void PreferredFolderToggled(ListViewItem item)
+        {
+            if (_fillingFolders || item == null) return;
+            var f = item.Tag as ScannedFolder;
+            if (f == null) return;
+            if (item.Checked) _preferred.Add(f.Path);
+            else _preferred.Remove(f.Path);
+            SyncPreferredBox();
             ApplyRule();
+        }
+
+        /// <summary>Is this file directly inside one of the ticked folders?</summary>
+        bool IsInPreferredFolder(FileEntry f)
+        {
+            if (_preferred.Count == 0 || f == null) return false;
+            string dir = f.DirectoryPath;
+            return !string.IsNullOrEmpty(dir) && _preferred.Contains(dir);
         }
 
         void SyncRuleMenu()
@@ -734,13 +869,11 @@ namespace TwinPix
             if (_groups.Count == 0) return;
             bool preferFolder = _chkKeepPreferred.Enabled && _chkKeepPreferred.Checked;
 
-            // The field can be edited after the scan, so which files count as
-            // preferred is worked out again here rather than trusted from then.
-            string preferred = _cboPreferred.Text.Trim();
-            _appliedPreferred = preferred;
+            // The ticks can change at any time after the scan, so which files
+            // count as preferred is worked out again here.
             foreach (var g in _groups)
                 foreach (var f in g.Files)
-                    f.InPreferred = preferFolder && Scanner.IsUnder(f.FullPath, preferred);
+                    f.InPreferred = preferFolder && IsInPreferredFolder(f);
 
             foreach (var g in _groups) Scanner.AutoSelect(g, CurrentRule, preferFolder);
             foreach (ListViewItem it in _lv.Items)
@@ -932,6 +1065,7 @@ namespace TwinPix
             _groups = remaining;
 
             FillGroups();
+            RefreshFolderCounts();
             if (_lv.Items.Count == 0) { _current = null; ClearCards(); _lblGroupTitle.Text = "No group left"; }
             EnableActions(_groups.Count > 0);
 
@@ -1052,16 +1186,6 @@ namespace TwinPix
             Browse(_cboRoot, "Folder to scan", KeyScan);
         }
 
-        void BtnPreferred_Click(object sender, EventArgs e)
-        {
-            Browse(_cboPreferred, "Preferred folder", KeyPreferred);
-        }
-
-        void BtnClearPreferred_Click(object sender, EventArgs e)
-        {
-            _cboPreferred.Text = "";
-        }
-
         void BtnQuarantine_Click(object sender, EventArgs e)
         {
             Browse(_cboQuarantine, "Destination folder for duplicates", KeyDestination);
@@ -1084,11 +1208,6 @@ namespace TwinPix
             ClearHistory(_cboRoot, KeyScan);
         }
 
-        void ClearPreferredHistory_Click(object sender, EventArgs e)
-        {
-            ClearHistory(_cboPreferred, KeyPreferred);
-        }
-
         void ClearDestinationHistory_Click(object sender, EventArgs e)
         {
             ClearHistory(_cboQuarantine, KeyDestination);
@@ -1102,25 +1221,7 @@ namespace TwinPix
 
         void CboSensitivity_SelectedIndexChanged(object sender, EventArgs e) { ScanOptionChanged(); }
 
-        void CboPreferred_TextChanged(object sender, EventArgs e) { PreferredFolderChanged(); }
-
-        void CboPreferred_Leave(object sender, EventArgs e)
-        {
-            if (_prefTimer != null) _prefTimer.Stop();
-            PreferredFolderCommitted();
-        }
-
-        void CboPreferred_SelectedIndexChanged(object sender, EventArgs e)
-        {
-            if (_prefTimer != null) _prefTimer.Stop();
-            PreferredFolderCommitted();
-        }
-
-        void PrefTimer_Tick(object sender, EventArgs e)
-        {
-            _prefTimer.Stop();
-            PreferredFolderCommitted();
-        }
+        void LvFolders_ItemChecked(object sender, ItemCheckedEventArgs e) { PreferredFolderToggled(e.Item); }
 
         void ChkKeepPreferred_CheckedChanged(object sender, EventArgs e) { RuleChanged(null); }
 

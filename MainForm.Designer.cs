@@ -39,16 +39,13 @@ namespace TwinPix
             this._cboRoot = new System.Windows.Forms.ComboBox();
             this._menuHistoryScan = new System.Windows.Forms.ContextMenuStrip(this.components);
             this._miClearScanHistory = new System.Windows.Forms.ToolStripMenuItem();
-            this._cboPreferred = new System.Windows.Forms.ComboBox();
-            this._menuHistoryPreferred = new System.Windows.Forms.ContextMenuStrip(this.components);
-            this._miClearPreferredHistory = new System.Windows.Forms.ToolStripMenuItem();
             this._chkRecursive = new System.Windows.Forms.CheckBox();
             this._cboMatch = new System.Windows.Forms.ComboBox();
             this._cboSensitivity = new System.Windows.Forms.ComboBox();
-            this._prefTimer = new System.Windows.Forms.Timer(this.components);
             this._fileIcons = new System.Windows.Forms.ImageList(this.components);
             this._centre = new System.Windows.Forms.Panel();
             this._split = new System.Windows.Forms.SplitContainer();
+            this._splitLists = new System.Windows.Forms.SplitContainer();
             this._lv = new System.Windows.Forms.ListView();
             this._colKept = ((System.Windows.Forms.ColumnHeader)(new System.Windows.Forms.ColumnHeader()));
             this._colExt = ((System.Windows.Forms.ColumnHeader)(new System.Windows.Forms.ColumnHeader()));
@@ -59,31 +56,28 @@ namespace TwinPix
             this._keepBar = new System.Windows.Forms.FlowLayoutPanel();
             this._lblKeep = new System.Windows.Forms.Label();
             this._lblGroups = new System.Windows.Forms.Label();
+            this._lvFolders = new System.Windows.Forms.ListView();
+            this._colFolder = ((System.Windows.Forms.ColumnHeader)(new System.Windows.Forms.ColumnHeader()));
+            this._colFolderImages = ((System.Windows.Forms.ColumnHeader)(new System.Windows.Forms.ColumnHeader()));
+            this._colFolderDups = ((System.Windows.Forms.ColumnHeader)(new System.Windows.Forms.ColumnHeader()));
+            this._lblFolders = new System.Windows.Forms.Label();
             this._cards = new System.Windows.Forms.FlowLayoutPanel();
             this._lblGroupTitle = new System.Windows.Forms.Label();
             this._destBox = new System.Windows.Forms.GroupBox();
             this._destGrid = new System.Windows.Forms.TableLayoutPanel();
             this._lblQuarantine = new System.Windows.Forms.Label();
             this._btnQuarantine = new System.Windows.Forms.Button();
+            this._btnMoveAll = new System.Windows.Forms.Button();
             this._sourceBox = new System.Windows.Forms.GroupBox();
             this._sourceGrid = new System.Windows.Forms.TableLayoutPanel();
             this._lblRoot = new System.Windows.Forms.Label();
             this._btnRoot = new System.Windows.Forms.Button();
             this._btnScan = new System.Windows.Forms.Button();
-            this._lblPreferred = new System.Windows.Forms.Label();
-            this._btnPreferred = new System.Windows.Forms.Button();
-            this._btnClearPreferred = new System.Windows.Forms.Button();
             this._opts = new System.Windows.Forms.FlowLayoutPanel();
             this._lblMatch = new System.Windows.Forms.Label();
             this._lblSensitivity = new System.Windows.Forms.Label();
             this._lblExtensions = new System.Windows.Forms.Label();
             this._txtExt = new System.Windows.Forms.TextBox();
-            this._toolbar = new System.Windows.Forms.ToolStrip();
-            this._tsScan = new System.Windows.Forms.ToolStripButton();
-            this._tsSep1 = new System.Windows.Forms.ToolStripSeparator();
-            this._tsMoveAll = new System.Windows.Forms.ToolStripButton();
-            this._tsSep2 = new System.Windows.Forms.ToolStripSeparator();
-            this._tsExport = new System.Windows.Forms.ToolStripButton();
             this._menu = new System.Windows.Forms.MenuStrip();
             this._mFile = new System.Windows.Forms.ToolStripMenuItem();
             this._miScan = new System.Windows.Forms.ToolStripMenuItem();
@@ -111,19 +105,21 @@ namespace TwinPix
             this._progress = new System.Windows.Forms.ToolStripProgressBar();
             this._menuHistoryDestination.SuspendLayout();
             this._menuHistoryScan.SuspendLayout();
-            this._menuHistoryPreferred.SuspendLayout();
             this._centre.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this._split)).BeginInit();
             this._split.Panel1.SuspendLayout();
             this._split.Panel2.SuspendLayout();
             this._split.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this._splitLists)).BeginInit();
+            this._splitLists.Panel1.SuspendLayout();
+            this._splitLists.Panel2.SuspendLayout();
+            this._splitLists.SuspendLayout();
             this._keepBar.SuspendLayout();
             this._destBox.SuspendLayout();
             this._destGrid.SuspendLayout();
             this._sourceBox.SuspendLayout();
             this._sourceGrid.SuspendLayout();
             this._opts.SuspendLayout();
-            this._toolbar.SuspendLayout();
             this._menu.SuspendLayout();
             this._status.SuspendLayout();
             this.SuspendLayout();
@@ -136,11 +132,11 @@ namespace TwinPix
             this._chkKeepPreferred.Margin = new System.Windows.Forms.Padding(4, 2, 12, 2);
             this._chkKeepPreferred.MinimumSize = new System.Drawing.Size(0, 32);
             this._chkKeepPreferred.Name = "_chkKeepPreferred";
-            this._chkKeepPreferred.Size = new System.Drawing.Size(123, 32);
+            this._chkKeepPreferred.Size = new System.Drawing.Size(131, 32);
             this._chkKeepPreferred.TabIndex = 1;
-            this._chkKeepPreferred.Text = "Preferred folder";
-            this._tip.SetToolTip(this._chkKeepPreferred, "Keep the copy that sits in the preferred folder, whatever the rule says.\r\nFollows" +
-        " the Preferred folder field above.");
+            this._chkKeepPreferred.Text = "Preferred folders";
+            this._tip.SetToolTip(this._chkKeepPreferred, "Keep the copy that sits in a ticked preferred folder, whatever the rule says.\r\nF" +
+        "ollows the Preferred folders list below.");
             this._chkKeepPreferred.CheckedChanged += new System.EventHandler(this.ChkKeepPreferred_CheckedChanged);
             // 
             // _chkKeepOldest
@@ -218,7 +214,7 @@ namespace TwinPix
             this._cboQuarantine.ContextMenuStrip = this._menuHistoryDestination;
             this._cboQuarantine.Dock = System.Windows.Forms.DockStyle.Fill;
             this._cboQuarantine.Location = new System.Drawing.Point(233, 5);
-            this._cboQuarantine.Margin = new System.Windows.Forms.Padding(3, 5, 3, 5);
+            this._cboQuarantine.Margin = new System.Windows.Forms.Padding(3, 6, 3, 6);
             this._cboQuarantine.MaxDropDownItems = 12;
             this._cboQuarantine.Name = "_cboQuarantine";
             this._cboQuarantine.Size = new System.Drawing.Size(928, 27);
@@ -259,7 +255,7 @@ namespace TwinPix
             this._chkPreserveTree.AutoSize = true;
             this._chkPreserveTree.Checked = true;
             this._chkPreserveTree.CheckState = System.Windows.Forms.CheckState.Checked;
-            this._destGrid.SetColumnSpan(this._chkPreserveTree, 3);
+            this._destGrid.SetColumnSpan(this._chkPreserveTree, 2);
             this._chkPreserveTree.Location = new System.Drawing.Point(234, 50);
             this._chkPreserveTree.Margin = new System.Windows.Forms.Padding(4, 2, 12, 2);
             this._chkPreserveTree.MinimumSize = new System.Drawing.Size(0, 32);
@@ -276,7 +272,7 @@ namespace TwinPix
             this._cboRoot.ContextMenuStrip = this._menuHistoryScan;
             this._cboRoot.Dock = System.Windows.Forms.DockStyle.Fill;
             this._cboRoot.Location = new System.Drawing.Point(233, 5);
-            this._cboRoot.Margin = new System.Windows.Forms.Padding(3, 5, 3, 5);
+            this._cboRoot.Margin = new System.Windows.Forms.Padding(3, 6, 3, 6);
             this._cboRoot.MaxDropDownItems = 12;
             this._cboRoot.Name = "_cboRoot";
             this._cboRoot.Size = new System.Drawing.Size(928, 27);
@@ -297,38 +293,6 @@ namespace TwinPix
             this._miClearScanHistory.Size = new System.Drawing.Size(141, 22);
             this._miClearScanHistory.Text = "Clear this list";
             this._miClearScanHistory.Click += new System.EventHandler(this.ClearScanHistory_Click);
-            // 
-            // _cboPreferred
-            // 
-            this._cboPreferred.AutoCompleteMode = System.Windows.Forms.AutoCompleteMode.SuggestAppend;
-            this._cboPreferred.AutoCompleteSource = System.Windows.Forms.AutoCompleteSource.FileSystemDirectories;
-            this._cboPreferred.ContextMenuStrip = this._menuHistoryPreferred;
-            this._cboPreferred.Dock = System.Windows.Forms.DockStyle.Fill;
-            this._cboPreferred.Location = new System.Drawing.Point(233, 53);
-            this._cboPreferred.Margin = new System.Windows.Forms.Padding(3, 5, 3, 5);
-            this._cboPreferred.MaxDropDownItems = 12;
-            this._cboPreferred.Name = "_cboPreferred";
-            this._cboPreferred.Size = new System.Drawing.Size(928, 27);
-            this._cboPreferred.TabIndex = 5;
-            this._tip.SetToolTip(this._cboPreferred, "Images inside this folder (and its subfolders) are kept by default.");
-            this._cboPreferred.SelectedIndexChanged += new System.EventHandler(this.CboPreferred_SelectedIndexChanged);
-            this._cboPreferred.TextChanged += new System.EventHandler(this.CboPreferred_TextChanged);
-            this._cboPreferred.Leave += new System.EventHandler(this.CboPreferred_Leave);
-            // 
-            // _menuHistoryPreferred
-            // 
-            this._menuHistoryPreferred.ImageScalingSize = new System.Drawing.Size(24, 24);
-            this._menuHistoryPreferred.Items.AddRange(new System.Windows.Forms.ToolStripItem[] {
-            this._miClearPreferredHistory});
-            this._menuHistoryPreferred.Name = "_menuHistoryPreferred";
-            this._menuHistoryPreferred.Size = new System.Drawing.Size(142, 26);
-            // 
-            // _miClearPreferredHistory
-            // 
-            this._miClearPreferredHistory.Name = "_miClearPreferredHistory";
-            this._miClearPreferredHistory.Size = new System.Drawing.Size(141, 22);
-            this._miClearPreferredHistory.Text = "Clear this list";
-            this._miClearPreferredHistory.Click += new System.EventHandler(this.ClearPreferredHistory_Click);
             // 
             // _chkRecursive
             // 
@@ -352,7 +316,7 @@ namespace TwinPix
             "Same bytes (MD5)",
             "Same picture (visual)"});
             this._cboMatch.Location = new System.Drawing.Point(244, 4);
-            this._cboMatch.Margin = new System.Windows.Forms.Padding(3, 4, 6, 4);
+            this._cboMatch.Margin = new System.Windows.Forms.Padding(3, 2, 6, 2);
             this._cboMatch.Name = "_cboMatch";
             this._cboMatch.Size = new System.Drawing.Size(250, 27);
             this._cboMatch.TabIndex = 2;
@@ -367,7 +331,7 @@ namespace TwinPix
             "Normal",
             "Loose - lightly edited"});
             this._cboSensitivity.Location = new System.Drawing.Point(592, 4);
-            this._cboSensitivity.Margin = new System.Windows.Forms.Padding(3, 4, 6, 4);
+            this._cboSensitivity.Margin = new System.Windows.Forms.Padding(3, 2, 6, 2);
             this._cboSensitivity.Name = "_cboSensitivity";
             this._cboSensitivity.Size = new System.Drawing.Size(210, 27);
             this._cboSensitivity.TabIndex = 4;
@@ -375,11 +339,6 @@ namespace TwinPix
         "e, and is likelier to put two different\r\nphotographs of the same scene in one gr" +
         "oup.\r\n\r\nVisual matching only.");
             this._cboSensitivity.SelectedIndexChanged += new System.EventHandler(this.CboSensitivity_SelectedIndexChanged);
-            // 
-            // _prefTimer
-            // 
-            this._prefTimer.Interval = 400;
-            this._prefTimer.Tick += new System.EventHandler(this.PrefTimer_Tick);
             // 
             // _fileIcons
             // 
@@ -391,10 +350,10 @@ namespace TwinPix
             // 
             this._centre.Controls.Add(this._split);
             this._centre.Dock = System.Windows.Forms.DockStyle.Fill;
-            this._centre.Location = new System.Drawing.Point(0, 249);
+            this._centre.Location = new System.Drawing.Point(0, 194);
             this._centre.Name = "_centre";
             this._centre.Padding = new System.Windows.Forms.Padding(9, 0, 9, 2);
-            this._centre.Size = new System.Drawing.Size(1540, 484);
+            this._centre.Size = new System.Drawing.Size(1540, 519);
             this._centre.TabIndex = 4;
             // 
             // _split
@@ -405,7 +364,7 @@ namespace TwinPix
             // 
             // _split.Panel1
             // 
-            this._split.Panel1.Controls.Add(this._lv);
+            this._split.Panel1.Controls.Add(this._splitLists);
             this._split.Panel1.Controls.Add(this._keepBar);
             this._split.Panel1.Controls.Add(this._lblGroups);
             // 
@@ -417,6 +376,26 @@ namespace TwinPix
             this._split.SplitterDistance = 1134;
             this._split.SplitterWidth = 6;
             this._split.TabIndex = 0;
+            // 
+            // _splitLists
+            // 
+            this._splitLists.Dock = System.Windows.Forms.DockStyle.Fill;
+            this._splitLists.Location = new System.Drawing.Point(0, 62);
+            this._splitLists.Name = "_splitLists";
+            this._splitLists.Orientation = System.Windows.Forms.Orientation.Horizontal;
+            // 
+            // _splitLists.Panel1
+            // 
+            this._splitLists.Panel1.Controls.Add(this._lv);
+            // 
+            // _splitLists.Panel2
+            // 
+            this._splitLists.Panel2.Controls.Add(this._lvFolders);
+            this._splitLists.Panel2.Controls.Add(this._lblFolders);
+            this._splitLists.Size = new System.Drawing.Size(1134, 420);
+            this._splitLists.SplitterDistance = 240;
+            this._splitLists.SplitterWidth = 6;
+            this._splitLists.TabIndex = 2;
             // 
             // _lv
             // 
@@ -430,12 +409,12 @@ namespace TwinPix
             this._lv.Dock = System.Windows.Forms.DockStyle.Fill;
             this._lv.FullRowSelect = true;
             this._lv.HideSelection = false;
-            this._lv.Location = new System.Drawing.Point(0, 62);
+            this._lv.Location = new System.Drawing.Point(0, 0);
             this._lv.MultiSelect = false;
             this._lv.Name = "_lv";
-            this._lv.Size = new System.Drawing.Size(1134, 420);
+            this._lv.Size = new System.Drawing.Size(1134, 240);
             this._lv.SmallImageList = this._fileIcons;
-            this._lv.TabIndex = 2;
+            this._lv.TabIndex = 0;
             this._lv.UseCompatibleStateImageBehavior = false;
             this._lv.View = System.Windows.Forms.View.Details;
             this._lv.ColumnClick += new System.Windows.Forms.ColumnClickEventHandler(this.Lv_ColumnClick);
@@ -514,6 +493,55 @@ namespace TwinPix
             this._lblGroups.TabIndex = 0;
             this._lblGroups.Text = "&Duplicate groups";
             // 
+            // _lvFolders
+            // 
+            this._lvFolders.CheckBoxes = true;
+            this._lvFolders.Columns.AddRange(new System.Windows.Forms.ColumnHeader[] {
+            this._colFolder,
+            this._colFolderImages,
+            this._colFolderDups});
+            this._lvFolders.Dock = System.Windows.Forms.DockStyle.Fill;
+            this._lvFolders.FullRowSelect = true;
+            this._lvFolders.HideSelection = false;
+            this._lvFolders.Location = new System.Drawing.Point(0, 26);
+            this._lvFolders.MultiSelect = false;
+            this._lvFolders.Name = "_lvFolders";
+            this._lvFolders.Size = new System.Drawing.Size(1134, 148);
+            this._lvFolders.TabIndex = 1;
+            this._tip.SetToolTip(this._lvFolders, "Tick a folder to keep the copies it holds, whatever the rule says.\r\nOnly the fi" +
+        "les directly inside a ticked folder count, not those of its subfolders.");
+            this._lvFolders.UseCompatibleStateImageBehavior = false;
+            this._lvFolders.View = System.Windows.Forms.View.Details;
+            this._lvFolders.ItemChecked += new System.Windows.Forms.ItemCheckedEventHandler(this.LvFolders_ItemChecked);
+            // 
+            // _colFolder
+            // 
+            this._colFolder.Text = "Folder";
+            this._colFolder.Width = 520;
+            // 
+            // _colFolderImages
+            // 
+            this._colFolderImages.Text = "Images";
+            this._colFolderImages.TextAlign = System.Windows.Forms.HorizontalAlignment.Right;
+            this._colFolderImages.Width = 90;
+            // 
+            // _colFolderDups
+            // 
+            this._colFolderDups.Text = "In groups";
+            this._colFolderDups.TextAlign = System.Windows.Forms.HorizontalAlignment.Right;
+            this._colFolderDups.Width = 100;
+            // 
+            // _lblFolders
+            // 
+            this._lblFolders.Dock = System.Windows.Forms.DockStyle.Top;
+            this._lblFolders.Font = new System.Drawing.Font("Segoe UI", 10.5F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this._lblFolders.Location = new System.Drawing.Point(0, 0);
+            this._lblFolders.Name = "_lblFolders";
+            this._lblFolders.Padding = new System.Windows.Forms.Padding(0, 6, 0, 0);
+            this._lblFolders.Size = new System.Drawing.Size(1134, 26);
+            this._lblFolders.TabIndex = 0;
+            this._lblFolders.Text = "&Preferred folders";
+            // 
             // _cards
             // 
             this._cards.AutoScroll = true;
@@ -541,10 +569,10 @@ namespace TwinPix
             // 
             this._destBox.Controls.Add(this._destGrid);
             this._destBox.Dock = System.Windows.Forms.DockStyle.Bottom;
-            this._destBox.Location = new System.Drawing.Point(0, 733);
+            this._destBox.Location = new System.Drawing.Point(0, 713);
             this._destBox.Name = "_destBox";
             this._destBox.Padding = new System.Windows.Forms.Padding(8, 2, 8, 6);
-            this._destBox.Size = new System.Drawing.Size(1540, 80);
+            this._destBox.Size = new System.Drawing.Size(1540, 100);
             this._destBox.TabIndex = 5;
             this._destBox.TabStop = false;
             this._destBox.Text = "Destination";
@@ -563,6 +591,7 @@ namespace TwinPix
             this._destGrid.Controls.Add(this._btnQuarantine, 2, 0);
             this._destGrid.Controls.Add(this._chkTrash, 3, 0);
             this._destGrid.Controls.Add(this._chkPreserveTree, 1, 1);
+            this._destGrid.Controls.Add(this._btnMoveAll, 3, 1);
             this._destGrid.Dock = System.Windows.Forms.DockStyle.Top;
             this._destGrid.Location = new System.Drawing.Point(8, 21);
             this._destGrid.Name = "_destGrid";
@@ -588,23 +617,42 @@ namespace TwinPix
             this._btnQuarantine.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink;
             this._btnQuarantine.Location = new System.Drawing.Point(1167, 4);
             this._btnQuarantine.Margin = new System.Windows.Forms.Padding(3, 4, 3, 4);
-            this._btnQuarantine.MinimumSize = new System.Drawing.Size(88, 32);
+            this._btnQuarantine.MinimumSize = new System.Drawing.Size(88, 38);
             this._btnQuarantine.Name = "_btnQuarantine";
             this._btnQuarantine.Padding = new System.Windows.Forms.Padding(10, 0, 10, 0);
-            this._btnQuarantine.Size = new System.Drawing.Size(92, 32);
+            this._btnQuarantine.Size = new System.Drawing.Size(92, 38);
             this._btnQuarantine.TabIndex = 2;
             this._btnQuarantine.Text = "Bro&wse...";
             this._btnQuarantine.UseVisualStyleBackColor = true;
             this._btnQuarantine.Click += new System.EventHandler(this.BtnQuarantine_Click);
             // 
+            // _btnMoveAll
+            // 
+            this._btnMoveAll.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) 
+            | System.Windows.Forms.AnchorStyles.Right)));
+            this._btnMoveAll.AutoSize = true;
+            this._btnMoveAll.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink;
+            this._btnMoveAll.Font = new System.Drawing.Font("Segoe UI", 10.5F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this._btnMoveAll.Location = new System.Drawing.Point(1287, 50);
+            this._btnMoveAll.Margin = new System.Windows.Forms.Padding(3, 4, 3, 4);
+            this._btnMoveAll.MinimumSize = new System.Drawing.Size(150, 38);
+            this._btnMoveAll.Name = "_btnMoveAll";
+            this._btnMoveAll.Padding = new System.Windows.Forms.Padding(10, 0, 10, 0);
+            this._btnMoveAll.Size = new System.Drawing.Size(234, 38);
+            this._btnMoveAll.TabIndex = 5;
+            this._btnMoveAll.Text = "MOVE &ALL";
+            this._tip.SetToolTip(this._btnMoveAll, "Move the duplicates of every group, keeping the copy marked in each (Ctrl+Shift+M)");
+            this._btnMoveAll.UseVisualStyleBackColor = true;
+            this._btnMoveAll.Click += new System.EventHandler(this.MoveAll_Click);
+            // 
             // _sourceBox
             // 
             this._sourceBox.Controls.Add(this._sourceGrid);
             this._sourceBox.Dock = System.Windows.Forms.DockStyle.Top;
-            this._sourceBox.Location = new System.Drawing.Point(0, 49);
+            this._sourceBox.Location = new System.Drawing.Point(0, 24);
             this._sourceBox.Name = "_sourceBox";
             this._sourceBox.Padding = new System.Windows.Forms.Padding(8, 2, 8, 6);
-            this._sourceBox.Size = new System.Drawing.Size(1540, 200);
+            this._sourceBox.Size = new System.Drawing.Size(1540, 170);
             this._sourceBox.TabIndex = 3;
             this._sourceBox.TabStop = false;
             this._sourceBox.Text = "Source";
@@ -622,18 +670,13 @@ namespace TwinPix
             this._sourceGrid.Controls.Add(this._cboRoot, 1, 0);
             this._sourceGrid.Controls.Add(this._btnRoot, 2, 0);
             this._sourceGrid.Controls.Add(this._btnScan, 3, 0);
-            this._sourceGrid.Controls.Add(this._lblPreferred, 0, 1);
-            this._sourceGrid.Controls.Add(this._cboPreferred, 1, 1);
-            this._sourceGrid.Controls.Add(this._btnPreferred, 2, 1);
-            this._sourceGrid.Controls.Add(this._btnClearPreferred, 3, 1);
-            this._sourceGrid.Controls.Add(this._opts, 0, 2);
-            this._sourceGrid.Controls.Add(this._lblExtensions, 0, 3);
-            this._sourceGrid.Controls.Add(this._txtExt, 1, 3);
+            this._sourceGrid.Controls.Add(this._opts, 0, 1);
+            this._sourceGrid.Controls.Add(this._lblExtensions, 0, 2);
+            this._sourceGrid.Controls.Add(this._txtExt, 1, 2);
             this._sourceGrid.Dock = System.Windows.Forms.DockStyle.Top;
             this._sourceGrid.Location = new System.Drawing.Point(8, 21);
             this._sourceGrid.Name = "_sourceGrid";
-            this._sourceGrid.RowCount = 4;
-            this._sourceGrid.RowStyles.Add(new System.Windows.Forms.RowStyle());
+            this._sourceGrid.RowCount = 3;
             this._sourceGrid.RowStyles.Add(new System.Windows.Forms.RowStyle());
             this._sourceGrid.RowStyles.Add(new System.Windows.Forms.RowStyle());
             this._sourceGrid.RowStyles.Add(new System.Windows.Forms.RowStyle());
@@ -656,10 +699,10 @@ namespace TwinPix
             this._btnRoot.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink;
             this._btnRoot.Location = new System.Drawing.Point(1167, 4);
             this._btnRoot.Margin = new System.Windows.Forms.Padding(3, 4, 3, 4);
-            this._btnRoot.MinimumSize = new System.Drawing.Size(88, 32);
+            this._btnRoot.MinimumSize = new System.Drawing.Size(88, 38);
             this._btnRoot.Name = "_btnRoot";
             this._btnRoot.Padding = new System.Windows.Forms.Padding(10, 0, 10, 0);
-            this._btnRoot.Size = new System.Drawing.Size(92, 32);
+            this._btnRoot.Size = new System.Drawing.Size(92, 38);
             this._btnRoot.TabIndex = 2;
             this._btnRoot.Text = "&Browse...";
             this._btnRoot.UseVisualStyleBackColor = true;
@@ -674,56 +717,14 @@ namespace TwinPix
             this._btnScan.Font = new System.Drawing.Font("Segoe UI", 10.5F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this._btnScan.Location = new System.Drawing.Point(1287, 4);
             this._btnScan.Margin = new System.Windows.Forms.Padding(3, 4, 3, 4);
-            this._btnScan.MinimumSize = new System.Drawing.Size(150, 32);
+            this._btnScan.MinimumSize = new System.Drawing.Size(150, 38);
             this._btnScan.Name = "_btnScan";
             this._btnScan.Padding = new System.Windows.Forms.Padding(10, 0, 10, 0);
-            this._btnScan.Size = new System.Drawing.Size(234, 32);
+            this._btnScan.Size = new System.Drawing.Size(234, 38);
             this._btnScan.TabIndex = 3;
             this._btnScan.Text = "&SCAN";
             this._btnScan.UseVisualStyleBackColor = true;
             this._btnScan.Click += new System.EventHandler(this.BtnScan_Click);
-            // 
-            // _lblPreferred
-            // 
-            this._lblPreferred.Dock = System.Windows.Forms.DockStyle.Fill;
-            this._lblPreferred.Location = new System.Drawing.Point(3, 48);
-            this._lblPreferred.Name = "_lblPreferred";
-            this._lblPreferred.Size = new System.Drawing.Size(224, 48);
-            this._lblPreferred.TabIndex = 4;
-            this._lblPreferred.Text = "&Preferred folder:";
-            this._lblPreferred.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
-            // 
-            // _btnPreferred
-            // 
-            this._btnPreferred.AutoSize = true;
-            this._btnPreferred.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink;
-            this._btnPreferred.Location = new System.Drawing.Point(1167, 52);
-            this._btnPreferred.Margin = new System.Windows.Forms.Padding(3, 4, 3, 4);
-            this._btnPreferred.MinimumSize = new System.Drawing.Size(88, 32);
-            this._btnPreferred.Name = "_btnPreferred";
-            this._btnPreferred.Padding = new System.Windows.Forms.Padding(10, 0, 10, 0);
-            this._btnPreferred.Size = new System.Drawing.Size(92, 32);
-            this._btnPreferred.TabIndex = 6;
-            this._btnPreferred.Text = "B&rowse...";
-            this._btnPreferred.UseVisualStyleBackColor = true;
-            this._btnPreferred.Click += new System.EventHandler(this.BtnPreferred_Click);
-            // 
-            // _btnClearPreferred
-            // 
-            this._btnClearPreferred.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) 
-            | System.Windows.Forms.AnchorStyles.Right)));
-            this._btnClearPreferred.AutoSize = true;
-            this._btnClearPreferred.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink;
-            this._btnClearPreferred.Location = new System.Drawing.Point(1287, 52);
-            this._btnClearPreferred.Margin = new System.Windows.Forms.Padding(3, 4, 3, 4);
-            this._btnClearPreferred.MinimumSize = new System.Drawing.Size(142, 32);
-            this._btnClearPreferred.Name = "_btnClearPreferred";
-            this._btnClearPreferred.Padding = new System.Windows.Forms.Padding(10, 0, 10, 0);
-            this._btnClearPreferred.Size = new System.Drawing.Size(234, 32);
-            this._btnClearPreferred.TabIndex = 7;
-            this._btnClearPreferred.Text = "C&lear";
-            this._btnClearPreferred.UseVisualStyleBackColor = true;
-            this._btnClearPreferred.Click += new System.EventHandler(this.BtnClearPreferred_Click);
             // 
             // _opts
             // 
@@ -735,16 +736,17 @@ namespace TwinPix
             this._opts.Controls.Add(this._lblSensitivity);
             this._opts.Controls.Add(this._cboSensitivity);
             this._opts.Dock = System.Windows.Forms.DockStyle.Fill;
-            this._opts.Location = new System.Drawing.Point(3, 99);
+            this._opts.Location = new System.Drawing.Point(3, 51);
             this._opts.Name = "_opts";
-            this._opts.Size = new System.Drawing.Size(1518, 36);
+            this._opts.MinimumSize = new System.Drawing.Size(0, 38);
+            this._opts.Size = new System.Drawing.Size(1518, 38);
             this._opts.TabIndex = 8;
             // 
             // _lblMatch
             // 
             this._lblMatch.AutoSize = true;
             this._lblMatch.Location = new System.Drawing.Point(169, 8);
-            this._lblMatch.Margin = new System.Windows.Forms.Padding(14, 8, 2, 0);
+            this._lblMatch.Margin = new System.Windows.Forms.Padding(14, 9, 2, 0);
             this._lblMatch.Name = "_lblMatch";
             this._lblMatch.Size = new System.Drawing.Size(70, 19);
             this._lblMatch.TabIndex = 1;
@@ -754,7 +756,7 @@ namespace TwinPix
             // 
             this._lblSensitivity.AutoSize = true;
             this._lblSensitivity.Location = new System.Drawing.Point(514, 8);
-            this._lblSensitivity.Margin = new System.Windows.Forms.Padding(14, 8, 2, 0);
+            this._lblSensitivity.Margin = new System.Windows.Forms.Padding(14, 9, 2, 0);
             this._lblSensitivity.Name = "_lblSensitivity";
             this._lblSensitivity.Size = new System.Drawing.Size(73, 19);
             this._lblSensitivity.TabIndex = 3;
@@ -763,7 +765,7 @@ namespace TwinPix
             // _lblExtensions
             // 
             this._lblExtensions.Dock = System.Windows.Forms.DockStyle.Fill;
-            this._lblExtensions.Location = new System.Drawing.Point(3, 138);
+            this._lblExtensions.Location = new System.Drawing.Point(3, 93);
             this._lblExtensions.Name = "_lblExtensions";
             this._lblExtensions.Size = new System.Drawing.Size(224, 45);
             this._lblExtensions.TabIndex = 9;
@@ -775,63 +777,14 @@ namespace TwinPix
             this._sourceGrid.SetColumnSpan(this._txtExt, 3);
             this._txtExt.Dock = System.Windows.Forms.DockStyle.Fill;
             this._txtExt.Location = new System.Drawing.Point(233, 143);
-            this._txtExt.Margin = new System.Windows.Forms.Padding(3, 5, 3, 5);
+            this._txtExt.Margin = new System.Windows.Forms.Padding(3, 6, 3, 6);
+            this._txtExt.MinimumSize = new System.Drawing.Size(0, 34);
+            this._txtExt.Multiline = true;
             this._txtExt.Name = "_txtExt";
-            this._txtExt.Size = new System.Drawing.Size(1288, 26);
+            this._txtExt.Size = new System.Drawing.Size(1288, 34);
             this._txtExt.TabIndex = 10;
+            this._txtExt.WordWrap = false;
             this._txtExt.Text = ".jpg;.jpeg;.jpe;.jfif;.png;.gif;.bmp;.tif;.tiff;.webp;.raw;.cr2;.nef;.arw;.dng;.orf;.rw2";
-            // 
-            // _toolbar
-            // 
-            this._toolbar.GripStyle = System.Windows.Forms.ToolStripGripStyle.Hidden;
-            this._toolbar.ImageScalingSize = new System.Drawing.Size(24, 24);
-            this._toolbar.Items.AddRange(new System.Windows.Forms.ToolStripItem[] {
-            this._tsScan,
-            this._tsSep1,
-            this._tsMoveAll,
-            this._tsSep2,
-            this._tsExport});
-            this._toolbar.Location = new System.Drawing.Point(0, 24);
-            this._toolbar.Name = "_toolbar";
-            this._toolbar.Size = new System.Drawing.Size(1540, 25);
-            this._toolbar.TabIndex = 2;
-            // 
-            // _tsScan
-            // 
-            this._tsScan.DisplayStyle = System.Windows.Forms.ToolStripItemDisplayStyle.Text;
-            this._tsScan.Name = "_tsScan";
-            this._tsScan.Size = new System.Drawing.Size(36, 22);
-            this._tsScan.Text = "Scan";
-            this._tsScan.ToolTipText = "Search the folder for duplicates (F5)";
-            this._tsScan.Click += new System.EventHandler(this.Scan_Click);
-            // 
-            // _tsSep1
-            // 
-            this._tsSep1.Name = "_tsSep1";
-            this._tsSep1.Size = new System.Drawing.Size(6, 25);
-            // 
-            // _tsMoveAll
-            // 
-            this._tsMoveAll.DisplayStyle = System.Windows.Forms.ToolStripItemDisplayStyle.Text;
-            this._tsMoveAll.Name = "_tsMoveAll";
-            this._tsMoveAll.Size = new System.Drawing.Size(56, 22);
-            this._tsMoveAll.Text = "Move all";
-            this._tsMoveAll.ToolTipText = "Move the duplicates of every group (Ctrl+Shift+M)";
-            this._tsMoveAll.Click += new System.EventHandler(this.MoveAll_Click);
-            // 
-            // _tsSep2
-            // 
-            this._tsSep2.Name = "_tsSep2";
-            this._tsSep2.Size = new System.Drawing.Size(6, 25);
-            // 
-            // _tsExport
-            // 
-            this._tsExport.DisplayStyle = System.Windows.Forms.ToolStripItemDisplayStyle.Text;
-            this._tsExport.Name = "_tsExport";
-            this._tsExport.Size = new System.Drawing.Size(68, 22);
-            this._tsExport.Text = "Export CSV";
-            this._tsExport.ToolTipText = "Write the full inventory to a CSV file (Ctrl+E)";
-            this._tsExport.Click += new System.EventHandler(this.Export_Click);
             // 
             // _menu
             // 
@@ -924,7 +877,7 @@ namespace TwinPix
             // 
             this._miKeepPreferred.Name = "_miKeepPreferred";
             this._miKeepPreferred.Size = new System.Drawing.Size(230, 22);
-            this._miKeepPreferred.Text = "Favour the &preferred folder";
+            this._miKeepPreferred.Text = "Favour the &preferred folders";
             this._miKeepPreferred.Click += new System.EventHandler(this.MiKeepPreferred_Click);
             // 
             // _miEditSep1
@@ -1045,7 +998,6 @@ namespace TwinPix
             this.Controls.Add(this._centre);
             this.Controls.Add(this._destBox);
             this.Controls.Add(this._sourceBox);
-            this.Controls.Add(this._toolbar);
             this.Controls.Add(this._menu);
             this.Controls.Add(this._status);
             this.Font = new System.Drawing.Font("Segoe UI", 10.5F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
@@ -1056,13 +1008,16 @@ namespace TwinPix
             this.Text = "TwinPix - duplicate images";
             this._menuHistoryDestination.ResumeLayout(false);
             this._menuHistoryScan.ResumeLayout(false);
-            this._menuHistoryPreferred.ResumeLayout(false);
             this._centre.ResumeLayout(false);
             this._split.Panel1.ResumeLayout(false);
             this._split.Panel1.PerformLayout();
             this._split.Panel2.ResumeLayout(false);
             ((System.ComponentModel.ISupportInitialize)(this._split)).EndInit();
             this._split.ResumeLayout(false);
+            this._splitLists.Panel1.ResumeLayout(false);
+            this._splitLists.Panel2.ResumeLayout(false);
+            ((System.ComponentModel.ISupportInitialize)(this._splitLists)).EndInit();
+            this._splitLists.ResumeLayout(false);
             this._keepBar.ResumeLayout(false);
             this._keepBar.PerformLayout();
             this._destBox.ResumeLayout(false);
@@ -1075,8 +1030,6 @@ namespace TwinPix
             this._sourceGrid.PerformLayout();
             this._opts.ResumeLayout(false);
             this._opts.PerformLayout();
-            this._toolbar.ResumeLayout(false);
-            this._toolbar.PerformLayout();
             this._menu.ResumeLayout(false);
             this._menu.PerformLayout();
             this._status.ResumeLayout(false);
@@ -1089,16 +1042,14 @@ namespace TwinPix
         #endregion
 
         private System.Windows.Forms.ToolTip _tip;
-        private System.Windows.Forms.Timer _prefTimer;
         private System.Windows.Forms.ImageList _fileIcons;
         private System.Windows.Forms.ContextMenuStrip _menuHistoryScan;
         private System.Windows.Forms.ToolStripMenuItem _miClearScanHistory;
-        private System.Windows.Forms.ContextMenuStrip _menuHistoryPreferred;
-        private System.Windows.Forms.ToolStripMenuItem _miClearPreferredHistory;
         private System.Windows.Forms.ContextMenuStrip _menuHistoryDestination;
         private System.Windows.Forms.ToolStripMenuItem _miClearDestinationHistory;
         private System.Windows.Forms.Panel _centre;
         private System.Windows.Forms.SplitContainer _split;
+        private System.Windows.Forms.SplitContainer _splitLists;
         private System.Windows.Forms.ListView _lv;
         private System.Windows.Forms.ColumnHeader _colKept;
         private System.Windows.Forms.ColumnHeader _colExt;
@@ -1115,6 +1066,11 @@ namespace TwinPix
         private System.Windows.Forms.CheckBox _chkKeepBest;
         private System.Windows.Forms.CheckBox _chkKeepLargest;
         private System.Windows.Forms.Label _lblGroups;
+        private System.Windows.Forms.Label _lblFolders;
+        private System.Windows.Forms.ListView _lvFolders;
+        private System.Windows.Forms.ColumnHeader _colFolder;
+        private System.Windows.Forms.ColumnHeader _colFolderImages;
+        private System.Windows.Forms.ColumnHeader _colFolderDups;
         private System.Windows.Forms.FlowLayoutPanel _cards;
         private System.Windows.Forms.Label _lblGroupTitle;
         private System.Windows.Forms.GroupBox _destBox;
@@ -1122,6 +1078,7 @@ namespace TwinPix
         private System.Windows.Forms.Label _lblQuarantine;
         private System.Windows.Forms.ComboBox _cboQuarantine;
         private System.Windows.Forms.Button _btnQuarantine;
+        private System.Windows.Forms.Button _btnMoveAll;
         private System.Windows.Forms.CheckBox _chkTrash;
         private System.Windows.Forms.CheckBox _chkPreserveTree;
         private System.Windows.Forms.GroupBox _sourceBox;
@@ -1130,10 +1087,6 @@ namespace TwinPix
         private System.Windows.Forms.ComboBox _cboRoot;
         private System.Windows.Forms.Button _btnRoot;
         private System.Windows.Forms.Button _btnScan;
-        private System.Windows.Forms.Label _lblPreferred;
-        private System.Windows.Forms.ComboBox _cboPreferred;
-        private System.Windows.Forms.Button _btnPreferred;
-        private System.Windows.Forms.Button _btnClearPreferred;
         private System.Windows.Forms.FlowLayoutPanel _opts;
         private System.Windows.Forms.CheckBox _chkRecursive;
         private System.Windows.Forms.Label _lblMatch;
@@ -1142,12 +1095,6 @@ namespace TwinPix
         private System.Windows.Forms.ComboBox _cboSensitivity;
         private System.Windows.Forms.Label _lblExtensions;
         private System.Windows.Forms.TextBox _txtExt;
-        private System.Windows.Forms.ToolStrip _toolbar;
-        private System.Windows.Forms.ToolStripButton _tsScan;
-        private System.Windows.Forms.ToolStripSeparator _tsSep1;
-        private System.Windows.Forms.ToolStripButton _tsMoveAll;
-        private System.Windows.Forms.ToolStripSeparator _tsSep2;
-        private System.Windows.Forms.ToolStripButton _tsExport;
         private System.Windows.Forms.MenuStrip _menu;
         private System.Windows.Forms.ToolStripMenuItem _mFile;
         private System.Windows.Forms.ToolStripMenuItem _miScan;
