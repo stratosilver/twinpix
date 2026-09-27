@@ -13,19 +13,53 @@ code does it.
 | Each request interprets the scripts | `csc.exe` compiles every `.cs` file, once, into `TwinPix.exe` |
 | `require` / autoloader | Nothing to include: all the files are compiled together, and every class sees every other one |
 | `namespace App;` and `use Foo\Bar;` | `namespace TwinPix { ... }` and `using System.IO;` — the same ideas |
-| PSR-4: one class per file | Same here: `Scanner` lives in `Scanner.cs`. Unlike PSR-4, C# does not tie namespaces to folders; this small program uses one namespace, `TwinPix`, and one folder |
+| PSR-4: one class per file, `src/` for the code | Same here: `Scanner` lives in `src\TwinPix\Scanner.cs`. By .NET convention the root of a project folder is its root namespace (`TwinPix`), and a subfolder adds a segment (`src\TwinPix\Services\` would be `TwinPix.Services`); this small program keeps every class at the root of the project |
 | A syntax error shows at run time | A type or syntax error stops the build: nothing runs until everything compiles |
 
 Three ways to build:
 
 - `build.bat` — the compiler shipped with Windows, no install needed. This is
   the reference build.
-- `TwinPix.csproj` in Visual Studio — needed for the form designer and the
+- `TwinPix.sln` in Visual Studio — needed for the form designer and the
   debugger (F5, breakpoints, step by step). A new `.cs` file must be added to
   the project (Solution Explorer, Add > Existing item); `build.bat` finds it on
   its own.
-- `selftest.bat` — builds the sources with `tools\SelfTest.cs` and runs the
+- `selftest.bat` — builds the sources with `tests\SelfTest.cs` and runs the
   safety self-test. Run it after any change to the engine.
+
+### Where the files are
+
+The usual layout of a .NET repository:
+
+```
+TwinPix.sln                  the solution: open this in Visual Studio
+build.bat, selftest.bat      the builds without Visual Studio
+README.md, DEVELOPER.md, LICENSE
+assets\                      icon and manifest (used by both builds), logos
+src\TwinPix\                 the application project: TwinPix.csproj and every class
+    Properties\AssemblyInfo.cs   settings of the program as a whole
+tests\SelfTest.cs            the safety self-test, built by selftest.bat
+tools\ResxToResources.cs     turns the designer's .resx files into resources, for build.bat
+```
+
+The classes of `src\TwinPix\`, by role:
+
+| Role | Files |
+| --- | --- |
+| Start-up | `Program.cs` — entry point, last-resort error report |
+| Main window | `MainForm.cs` (behaviour), `MainForm.Designer.cs` (controls and layout, owned by the form designer), `MainForm.resx` |
+| Thumbnail card | `FileCard.cs`, `FileCard.Designer.cs`, `FileCard.resx` |
+| Window helpers | `GroupComparer.cs` (sort order of the group list), `FolderHistory.cs` (remembered folders, window placement), `UiStyle.cs` (fonts, colours, icon), `Thumbnail.cs` (previews), `Shell.cs` (open a file, show it in Explorer) |
+| What a scan is asked and finds | `ScanOptions.cs`, `ScanResult.cs`, `ScannedFolder.cs`, `MatchMode.cs` |
+| Finding duplicates | `FolderWalker.cs` (which folders and files are looked at), `Scanner.cs` (runs a scan, groups identical files), `FileEntry.cs` (one image), `DupGroup.cs` (the copies of one image) |
+| Visual matching | `Fingerprint.cs`, `ImageHash.cs` (computes fingerprints), `FingerprintCache.cs` (keeps them between runs), `VisualMatcher.cs` (groups images showing the same picture) |
+| The copy to keep | `KeepRule.cs` (the rules), `KeepSelector.cs` (applies them) |
+| Removing safely | `DuplicateRemover.cs` (checks every copy again, then moves it), `RemovalItem.cs`, `RemovalOutcome.cs`, `RemovalSettings.cs`, `RemovalJournal.cs` (CSV log of every move), `RecycleBin.cs` (refused where Windows would delete for good), `FileIdentity.cs` (two names of one file vs. two files) |
+| Windows plumbing | `NativeMethods.cs` (every Win32 function called), `Native.cs` (the look-and-feel helpers built on them), `PathHelper.cs` (path comparisons, free file names), `Format.cs` (human-readable sizes) |
+
+`build.bat` compiles every `.cs` file of `src\TwinPix\` and of its `Properties\`
+folder. A new subfolder of classes would have to be added to it (and to
+`selftest.bat`) as well as to the project.
 
 ### Only C# 5
 
@@ -224,7 +258,7 @@ key, a resize — until the window closes (`Application.Run` in `Program.cs`).
   constructor; `AutoScaleMode = None` on both forms.
 - **Screen scaling**: the program is not "DPI-aware" (Windows enlarges it on a
   150 % screen). The WPF classes used for decoding would switch that on in the
-  middle of a scan; the attribute at the top of `TwinPix.cs` prevents it.
+  middle of a scan; the attribute in `Properties\AssemblyInfo.cs` prevents it.
 
 ## 4. Calling Windows directly
 
@@ -268,7 +302,7 @@ checks them.
    returns `b` when `b` is itself a full path, and `Path.GetFullPath("C:")` is
    the current folder of drive C, not its root.
 9. **Risky confirmations default to Cancel** (`Native.ConfirmRisky`).
-10. **A new rule gets a self-test check** in `tools\SelfTest.cs`.
+10. **A new rule gets a self-test check** in `tests\SelfTest.cs`.
 
 ## 6. Where things are stored
 

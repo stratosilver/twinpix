@@ -6,8 +6,8 @@
 //  file with the very same csc.exe it uses for TwinPix itself: no SDK,
 //  no resgen.exe, no download.
 //
-//  This file lives in tools\ on purpose. build.bat compiles "*.cs" next
-//  to itself only, and TwinPix.csproj lists its sources one by one, so
+//  This file lives in tools\ on purpose. build.bat compiles the sources
+//  of src\TwinPix\ only, and TwinPix.csproj lists its sources one by one, so
 //  neither build pulls this converter into TwinPix.exe.
 //
 //  usage: ResxToResources <input.resx> <output.resources>

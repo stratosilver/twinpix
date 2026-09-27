@@ -5,9 +5,10 @@ rem  (csc.exe from the .NET Framework 4.x, present on every Windows 8+
 rem  box and on any Windows 7 with the framework enabled).
 rem  No Visual Studio, no SDK, no download required.
 rem
-rem  Every .cs file next to this script is compiled - one class per file,
-rem  listed in the map at the top of TwinPix.cs. The files in tools\ are
-rem  not part of the application. TwinPix.csproj builds those very same
+rem  The sources are those of the project in src\TwinPix\ - every .cs file
+rem  of that folder and of its Properties\ folder, one class per file (the
+rem  map is in DEVELOPER.md). The files in tests\ and tools\ are not part
+rem  of the application. src\TwinPix\TwinPix.csproj builds those very same
 rem  files in Visual Studio; neither build needs the other.
 rem
 rem  This compiler only knows C# 5 (2012): no interpolated strings, no
@@ -17,7 +18,7 @@ rem  too - see DEVELOPER.md.
 rem
 rem  selftest.bat builds and runs the safety self-test the same way.
 rem
-rem  Every .resx file next to this script is embedded as well, under the
+rem  Every .resx file of the project is embedded as well, under the
 rem  name the form's ComponentResourceManager asks for at run time
 rem  (TwinPix.<FormName>.resources), so tooltips, strings and pictures
 rem  added in the designer work here exactly as they do in Visual Studio.
@@ -50,6 +51,14 @@ if not defined CSC (
 
 echo Compiler: %CSC%
 echo.
+
+rem The project's sources: src\TwinPix\ (see TwinPix.sln).
+set "SRC=%~dp0src\TwinPix"
+if not exist "%SRC%\Program.cs" (
+  echo [ERROR] The sources were not found in src\TwinPix\ - see DEVELOPER.md.
+  pause
+  exit /b 1
+)
 
 rem Application icon: used for the executable itself and embedded as a
 rem resource so the window and the taskbar show it too. Optional.
@@ -84,7 +93,7 @@ rem
 rem  csc.exe cannot read a .resx, and resgen.exe only comes with the SDK.
 rem  So the converter is built here, with the compiler already found
 rem  above: tools\ResxToResources.cs is a few lines around the framework's
-rem  own ResXResourceReader. Each .resx next to this script then becomes
+rem  own ResXResourceReader. Each .resx of src\TwinPix\ then becomes
 rem  obj\resx\<name>.resources and is embedded as TwinPix.<name>.resources,
 rem  which is the name "new ComponentResourceManager(typeof(MainForm))"
 rem  looks for. Leave this step out and a form whose designer wrote a
@@ -113,7 +122,7 @@ if exist "%RESSRC%" (
     exit /b 1
   )
 
-  for %%R in ("%~dp0*.resx") do (
+  for %%R in ("%SRC%\*.resx") do (
     "%RESGEN%" "%%~fR" "%RESDIR%\%%~nR.resources"
     if errorlevel 1 (
       echo.
@@ -157,7 +166,7 @@ if /I "%~1"=="nowic" (
   /reference:System.Core.dll ^
   /reference:System.Drawing.dll ^
   /reference:System.Windows.Forms.dll ^
-  "%~dp0*.cs"
+  "%SRC%\*.cs" "%SRC%\Properties\*.cs"
 
 if errorlevel 1 (
   echo.

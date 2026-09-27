@@ -1,6 +1,6 @@
 @echo off
 rem =====================================================================
-rem  Builds and runs the TwinPix self-test (tools\SelfTest.cs) with the
+rem  Builds and runs the TwinPix self-test (tests\SelfTest.cs) with the
 rem  compiler shipped with Windows, and the same options as build.bat.
 rem
 rem  The self-test checks the safety rules of the engine on this very
@@ -46,7 +46,7 @@ rem self-test's entry point instead of the application's.
   /out:"%OUT%\TwinPixSelfTest.exe" %WICOPT% ^
   /reference:System.dll /reference:System.Core.dll ^
   /reference:System.Drawing.dll /reference:System.Windows.Forms.dll ^
-  "%~dp0*.cs" "%~dp0tools\SelfTest.cs"
+  "%~dp0src\TwinPix\*.cs" "%~dp0src\TwinPix\Properties\*.cs" "%~dp0tests\SelfTest.cs"
 if errorlevel 1 (
   echo.
   echo [ERROR] The self-test could not be built.

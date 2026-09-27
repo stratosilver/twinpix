@@ -10,23 +10,30 @@ click and a lost picture.
 
 ## Project layout
 
-Every class lives in a file of its own name, next to the others (one namespace,
-`TwinPix`). The map at the top of `TwinPix.cs` lists them all; in short:
+The usual layout of a .NET repository: the solution at the root, the
+application project in `src\TwinPix\`, the tests in `tests\`, the build tools in
+`tools\`.
 
-| Files | What is in them |
-| --- | --- |
-| `Program.cs` | entry point and last-resort error report |
-| `MainForm.cs`, `MainForm.Designer.cs` | the main window: behaviour, then controls and layout |
-| `FileCard.cs`, `FileCard.Designer.cs` | the thumbnail card: behaviour, then layout |
-| `FolderWalker.cs`, `Scanner.cs`, `ImageHash.cs`, `VisualMatcher.cs`, `KeepSelector.cs`… | finding duplicates |
-| `DuplicateRemover.cs`, `RecycleBin.cs`, `FileIdentity.cs`, `RemovalJournal.cs`… | removing them safely |
-| `NativeMethods.cs`, `Native.cs` | the Windows API calls, and the look-and-feel helpers built on them |
-| `TwinPix.cs` | assembly-wide settings and the map of the files |
-| `MainForm.resx`, `FileCard.resx` | designer resources |
-| `TwinPix.csproj`, `TwinPix.sln` | Visual Studio project and solution |
-| `build.bat`, `selftest.bat` | build the application; build and run the safety self-test |
-| `tools\` | the `.resx` converter used by `build.bat`, and the self-test |
-| `DEVELOPER.md` | the C# this code relies on, explained for a PHP developer, and the rules a change must keep |
+```
+TwinPix.sln              Visual Studio solution
+build.bat, selftest.bat  build the application; build and run the safety self-test
+README.md, DEVELOPER.md  this file; the developer guide
+LICENSE                  MIT licence
+assets\                  icon, manifest, logos
+src\TwinPix\             the application project
+    TwinPix.csproj
+    Properties\AssemblyInfo.cs     settings that apply to the whole program
+    Program.cs                     entry point
+    MainForm.cs, .Designer.cs, .resx   the main window
+    FileCard.cs, .Designer.cs, .resx   the thumbnail card
+    Scanner.cs, DuplicateRemover.cs...  one file per class
+tests\SelfTest.cs        the safety self-test (not part of TwinPix.exe)
+tools\ResxToResources.cs used by build.bat
+```
+
+Every class lives in a file of its own name, all in the `TwinPix` namespace. The
+full map of the files, class by class, is in `DEVELOPER.md`, which also explains
+the C# this code relies on for a PHP developer, and the rules a change must keep.
 
 The two `.Designer.cs` files hold nothing but control creation and property
 assignments, which is what lets Visual Studio's **Windows Forms designer** open
@@ -49,8 +56,8 @@ build.bat
 ```
 
 The script looks for `csc.exe` in `%WINDIR%\Microsoft.NET\Framework64\v4.0.30319`
-(then the 32-bit path), compiles every `.cs` file next to it and writes
-`TwinPix.exe` in the same folder. The executable is self-contained and can be
+(then the 32-bit path), compiles the sources of `src\TwinPix\` and writes
+`TwinPix.exe` next to the script. The executable is self-contained and can be
 copied anywhere.
 
 That compiler only knows **C# 5** (2012). `TwinPix.csproj` sets
@@ -58,11 +65,12 @@ That compiler only knows **C# 5** (2012). `TwinPix.csproj` sets
 written there always builds with `build.bat`; `DEVELOPER.md` lists what is not
 available and what to write instead.
 
-`TwinPix.csproj` builds those very same sources in Visual Studio (F5, output in
-`bin\Debug`). Neither build needs the other, and the project file is there for
-the designer: the application itself still depends on nothing but the framework
-shipped with Windows. A new `.cs` file is picked up by `build.bat` on its own,
-but must be added to `TwinPix.csproj`.
+Open `TwinPix.sln` in Visual Studio to build the very same sources there (F5,
+output in `src\TwinPix\bin\Debug`). Neither build needs the other, and the project
+file is there for the designer: the application itself still depends on nothing
+but the framework shipped with Windows. A new `.cs` file in `src\TwinPix\` is
+picked up by `build.bat` on its own, but must be added to the project in Visual
+Studio.
 
 Every `.resx` file is converted and embedded by `build.bat` (through
 `tools\ResxToResources.cs`), under the name the form asks for at run time, so a
@@ -90,7 +98,7 @@ every core.
 selftest.bat
 ```
 
-builds the application's sources together with `tools\SelfTest.cs` and runs the
+builds the application's sources together with `tests\SelfTest.cs` and runs the
 result. It creates a small photo library in a temporary folder — copies, a
 Recycle Bin folder, a folder junction, a hard link, a RAW+JPEG-style pair,
 multi-page TIFFs, plain images — and checks every safety rule of this README on

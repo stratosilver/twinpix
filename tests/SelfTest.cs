@@ -10,7 +10,7 @@
 //  there, and deletes it at the end. It never looks at your pictures.
 //
 //  Built and run by selftest.bat (TwinPix.exe itself does not contain it:
-//  build.bat only compiles the .cs files next to it, not those in tools\).
+//  build.bat only compiles the sources of src\TwinPix\, not those in tests\).
 // =====================================================================
 
 using System;

@@ -1,11 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Visual Studio project for TwinPix.
+  Visual Studio project for TwinPix, in src\TwinPix\ as .NET projects
+  usually are; the solution (TwinPix.sln) sits at the root of the
+  repository, with the build scripts and the documentation.
 
   It exists so the Windows Forms designer can open MainForm.cs and
   FileCard.cs on the design surface; build.bat still builds the very same
   sources with the compiler shipped with Windows, and needs none of this.
-  A new .cs file must be added below as well (build.bat takes *.cs).
+  A new .cs file must be added below as well (build.bat takes the *.cs of
+  this folder and of Properties\ on its own).
 
   The WIC constant and the three WPF references below are what enable the
   fast image decoder used by visual matching. If those assemblies are not
@@ -25,8 +28,9 @@
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
-    <ApplicationIcon>assets\twinpix.ico</ApplicationIcon>
-    <ApplicationManifest>assets\TwinPix.manifest</ApplicationManifest>
+    <!-- The icon and the manifest are shared with build.bat, in assets\ at the root. -->
+    <ApplicationIcon>..\..\assets\twinpix.ico</ApplicationIcon>
+    <ApplicationManifest>..\..\assets\TwinPix.manifest</ApplicationManifest>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <!-- build.bat uses the csc.exe shipped with Windows, which only knows C# 5.
          Visual Studio is held to the same version, so that code written there
@@ -63,8 +67,8 @@
     <Reference Include="System.Xaml" />
   </ItemGroup>
   <ItemGroup>
-    <!-- One class per file; build.bat compiles the same files as *.cs. See the map in TwinPix.cs. -->
-    <Compile Include="TwinPix.cs" />
+    <!-- One class per file; build.bat compiles the same files. The map is in DEVELOPER.md. -->
+    <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="DupGroup.cs" />
     <Compile Include="DuplicateRemover.cs" />
@@ -116,18 +120,15 @@
     <EmbeddedResource Include="FileCard.resx">
       <DependentUpon>FileCard.cs</DependentUpon>
     </EmbeddedResource>
-    <EmbeddedResource Include="assets\twinpix.ico">
+    <EmbeddedResource Include="..\..\assets\twinpix.ico">
+      <Link>assets\twinpix.ico</Link>
       <LogicalName>TwinPix.twinpix.ico</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
   <ItemGroup>
-    <None Include="build.bat" />
-    <None Include="selftest.bat" />
-    <None Include="README.md" />
-    <None Include="DEVELOPER.md" />
-    <None Include="tools\SelfTest.cs" />
-    <None Include="assets\TwinPix.manifest" />
-    <None Include="tools\ResxToResources.cs" />
+    <None Include="..\..\assets\TwinPix.manifest">
+      <Link>assets\TwinPix.manifest</Link>
+    </None>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
