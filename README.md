@@ -6,6 +6,30 @@ actually looks like — shows them side by side with a preview, and lets you pic
 the one to keep. The others are moved to a quarantine folder or to the Recycle
 Bin; nothing is destroyed outright.
 
+## Project layout
+
+| File | What is in it |
+| --- | --- |
+| `TwinPix.cs` | the engine: model, fingerprints, cache, scanner, and the Win32 and helper classes |
+| `MainForm.cs` | the main window's behaviour - scanning, keep rules, moving, export |
+| `MainForm.Designer.cs` | every control of the main window and its layout |
+| `FileCard.cs` | the thumbnail card's behaviour |
+| `FileCard.Designer.cs` | the thumbnail card's layout |
+| `MainForm.resx`, `FileCard.resx` | designer resources (empty; kept for Visual Studio) |
+| `TwinPix.csproj`, `TwinPix.sln` | Visual Studio project and solution |
+
+The two `.Designer.cs` files hold nothing but control creation and property
+assignments, which is what lets Visual Studio's **Windows Forms designer** open
+`MainForm.cs` and `FileCard.cs` on the design surface (double-click either in
+the Solution Explorer). Move a button, change a caption, add a control: the
+designer rewrites the `.Designer.cs` file and leaves the rest alone. Nothing
+outside those two files creates a control, so the design surface and the running
+window can never disagree.
+
+Events added in the designer's property grid land in `MainForm.cs` or
+`FileCard.cs` as ordinary methods; the handlers already there are thin wrappers
+that call the real work, so a new button is two clicks and one line.
+
 ## Build
 
 Nothing to install: the `csc.exe` compiler shipped with Windows is enough.
@@ -15,8 +39,19 @@ build.bat
 ```
 
 The script looks for `csc.exe` in `%WINDIR%\Microsoft.NET\Framework64\v4.0.30319`
-(then the 32-bit path), compiles `TwinPix.cs` and writes `TwinPix.exe` next to
-it. The executable is self-contained and can be copied anywhere.
+(then the 32-bit path), compiles every `.cs` file next to it and writes
+`TwinPix.exe` in the same folder. The executable is self-contained and can be
+copied anywhere.
+
+`TwinPix.csproj` builds those very same sources in Visual Studio (F5, output in
+`bin\Debug`). Neither build needs the other, and the project file is there for
+the designer: the application itself still depends on nothing but the framework
+shipped with Windows.
+
+The `.resx` files are for the designer only - nothing in them is loaded at run
+time, which is why `csc.exe` does not need them. Dropping a picture on a form in
+the designer would put it in a `.resx` that `build.bat` cannot embed; keep images
+out of the designer, or build with Visual Studio from that point on.
 
 `assets\TwinPix.manifest` is applied with `/win32manifest`. It pulls in version 6
 of the common controls, which is what themes the controls and makes the Vista
@@ -40,7 +75,7 @@ set FW=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319
   /reference:PresentationCore.dll /reference:WindowsBase.dll /reference:System.Xaml.dll ^
   /reference:System.dll /reference:System.Core.dll ^
   /reference:System.Drawing.dll /reference:System.Windows.Forms.dll ^
-  /out:TwinPix.exe TwinPix.cs
+  /out:TwinPix.exe *.cs
 ```
 
 The three WPF references and `/define:WIC` are what enable the fast image
@@ -50,27 +85,18 @@ falling back to GDI+ (`build.bat nowic` does exactly that). The .NET Framework
 
 ## Duplicate criteria
 
-The *Matching* list decides what counts as a duplicate. Each setting costs more
-than the one above it and finds what the one above it cannot.
+The *Matching* list decides what counts as a duplicate.
 
-**Name + size** (the default, and the fastest). Two images are duplicates when
-both of the following match:
-
-1. **the exact size** in bytes;
-2. **the extension**, compared without regard to case — `IMG_4471.JPG` and
-   `photo.jpg` are the same extension, `.jpg` and `.jpeg` are not.
-
-File names play no part: two images with the same size and extension are grouped
-whatever they are called. That is a deliberately wide net.
-
-**Same bytes (MD5)** narrows it: every file of a group is hashed and those whose
-bytes differ are split apart, turning "same size by coincidence" into "identical
-file". Slower, and what makes the result trustworthy on a large library.
+**Same bytes (MD5)** (the default). Files are first grouped by **exact size** in
+bytes and **extension**, compared without regard to case — `IMG_4471.JPG` and
+`photo.jpg` are the same extension, `.jpg` and `.jpeg` are not. Every file of a
+group is then hashed and those whose bytes differ are split apart, so a group
+only ever holds identical files. File names play no part.
 
 **Same picture (visual)** drops the byte-level criteria entirely and compares
 what the images look like, so it finds the same photograph again after it has
 been resized, re-saved at another quality, converted to another format, stripped
-of its EXIF or turned to greyscale — cases the two settings above cannot see at
+of its EXIF or turned to greyscale — cases the byte comparison cannot see at
 all, because not one byte is shared. See below.
 
 Because a group has no single name, the list shows the name of the file you are
@@ -79,7 +105,7 @@ selection.
 
 ## Visual matching
 
-Each image is reduced to a fingerprint of 144 bytes, and only fingerprints are
+Each image is reduced to a fingerprint of 265 bytes, and only fingerprints are
 compared:
 
 - **dHash**, 64 bits — a 9×8 grey grid, one bit per "is this pixel brighter than
@@ -90,6 +116,8 @@ compared:
 - an **8×8 grey grid** — kept so that two candidates can be compared pixel by
   pixel, which is what rejects the look-alikes the two hashes agree on by
   accident.
+- an **11×11 grey grid** — the same, with about twice the points (121 instead
+  of 64). It replaces the 8×8 grid at the *Normal* sensitivity.
 
 A pair is accepted only when the hashes agree, the aspect ratio matches within
 8 %, and the grids line up. Accepted pairs are merged with a union-find, so a
@@ -98,7 +126,9 @@ the original puts all three together even if the thumbnail and the original are
 too far apart to match each other directly.
 
 *Sensitivity* sets how many of the 64 bits may differ — 3 for re-saved and
-resized copies, 6 by default, 10 for cropped or lightly retouched ones.
+resized copies, 6 by default, 10 for cropped or lightly retouched ones. At
+*Normal*, the pixel-by-pixel check also runs on the 11×11 grid rather than the
+8×8 one, which rejects more near-misses.
 
 Nothing is compared with everything: the 64 bits are cut into *k* bands, where
 *k* is the smallest power of two above the threshold. Two fingerprints that
@@ -133,30 +163,34 @@ results.
 ## Usage
 
 1. **Folder to scan** — the root of the walk (subfolders included).
-2. **Preferred folder** *(optional)* — images living there are pre-selected as the
-   ones to keep in every group.
    Every folder field is a drop-down that remembers the folders used before:
    pick one from the list, or keep typing — the path auto-completes against the
-   file system. The three lists are saved in
+   file system. The two lists are saved in
    `%APPDATA%\TwinPix\folders.txt` (which also holds the window placement) and
    are restored at the next start, with the
    most recent entry pre-selected. Right-click a field to clear its list.
-3. **SCAN** — the list on the left shows one row per duplicate group, sorted by
+2. **SCAN** — the list on the left shows one row per duplicate group, sorted by
    reclaimable space, and takes three quarters of the window. Click any column
    header to sort by it (kept file, extension,
    size, number of copies, reclaimable space, folder being kept); click the same
    header again to reverse the order. The active column carries a `^` or `v`
    marker.
+3. **Preferred folders** — below the groups, every subfolder of the scanned
+   folder is listed with the number of images it holds and how many of them sit
+   in a duplicate group. Tick a folder and the copies it holds are kept in every
+   group. Only the files directly inside a ticked folder count, not those of its
+   subfolders — tick those too if they should count. The ticks survive a new
+   scan of the same folder.
 4. Select a group: its thumbnails appear on the right, titled with the size and
    extension shared by the files. Click a thumbnail (or
    "Keep this file") to mark the copy to keep; it turns green.
    The *Keep* check boxes above the list decide the choice made for you, and
    always apply to **every** group at once:
 
-   - **Preferred folder** follows the field of the same name: it ticks itself as
-     soon as a folder is given and greys out when the field is emptied. While it
-     is ticked, a copy sitting in that folder is kept whatever the rule below
-     says. Untick it to ignore the folder without clearing the field.
+   - **Preferred folders** follows the list of the same name: it ticks itself as
+     soon as a folder is ticked there and greys out when none is. While it is
+     ticked, a copy sitting in a ticked folder is kept whatever the rule below
+     says. Untick it to ignore the folders without clearing the ticks.
    - **Oldest**, **Newest**, **Shortest path**, **Best resolution** and
      **Largest file** are exclusive — exactly one is always active — and settle
      the choice between the remaining copies. *Shortest path* (the copy closest
@@ -164,12 +198,10 @@ results.
      *Best resolution*, which is the one that makes sense when the copies no
      longer share a size.
 
-   Changing any box, or pointing the preferred folder somewhere else, re-applies
-   the choice to the whole list immediately. A path typed by hand is taken into
-   account as soon as typing pauses, so the list does not re-sort at every
-   keystroke.
-5. **Move duplicates to** — enter the destination folder, then *Move ALL
-   duplicates*. *Keep folder structure* recreates the original relative path
+   Changing any box, or ticking a preferred folder, re-applies the choice to the
+   whole list immediately.
+5. **Move duplicates to** — enter the destination folder, then **MOVE ALL**,
+   at the bottom right. *Keep folder structure* recreates the original relative path
    inside the destination, so everything can be put back if needed.
    *Move to trash* (unticked by default) sends the duplicates to the Windows
    Recycle Bin instead, from where they can be restored; the destination field,
@@ -183,18 +215,18 @@ changing any of them searches the folder again and rebuilds the list of
 duplicates on the spot. Nothing happens before the first scan, and a change made
 while a scan is running simply applies to the next one.
 
-The menu bar and the toolbar carry the same commands, with the usual shortcuts:
+The *File* menu carries the same commands, with the usual shortcuts:
 F5 to scan, Ctrl+Shift+M to move, Ctrl+E to export. Every field and
 check box has an access key (Alt+F for the folder to scan, and so on).
 
 **SCAN** is the window's default button (Enter key), which Windows outlines on
-its own; it reads *CANCEL* while a scan runs. It and **Move ALL duplicates**
+its own; it reads *CANCEL* while a scan runs. It and **MOVE ALL**
 carry a bold label to mark them as the primary actions. They are deliberately
 left in the system's own button style: giving a button a custom background
 colour makes Windows drop the visual-style rendering and fall back to a
 square-cornered classic button, which no longer matches its neighbours.
 
-*Export CSV* writes the full inventory (group, file, folder, size, date, action)
+*File > Export list to CSV* writes the full inventory (group, file, folder, size, date, action)
 without changing anything.
 
 Extras: double-click a thumbnail to open the image in the default viewer;
