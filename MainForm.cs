@@ -5,6 +5,14 @@
 //  MainForm.Designer.cs, which Visual Studio's form designer reads and
 //  rewrites. Nothing here creates a control, so the design surface and
 //  the running window can never disagree.
+//
+//  PHP note: a desktop program is not a request that starts, runs and
+//  ends. The window stays open and Windows calls the methods below when
+//  something happens - a click, a resize, a key. Two rules follow:
+//    - the window may only be touched from its own thread (the "UI
+//      thread"), which must never be kept busy, or the window freezes;
+//    - long work (scanning, moving files) therefore runs on a
+//      BackgroundWorker, which reports back on the UI thread.
 // =====================================================================
 
 using System;
@@ -19,58 +27,90 @@ using System.Windows.Forms;
 
 namespace TwinPix
 {
+    /// <summary>
+    /// The main window. PHP note: "partial" - the class continues in
+    /// MainForm.Designer.cs, which declares and lays out the controls
+    /// (the _lv, _cboRoot, _btnScan... fields used here).
+    /// </summary>
     public partial class MainForm : Form
     {
+        // Keys of the remembered values in FolderHistory.
+        private const string KeyScan = "scan";
+        private const string KeyDestination = "destination";
+        private const string KeyWindow = "window";
+
+        private const string AppVersion = "1.0";
+
+        /// <summary>Share of the window given to the lists when it first opens.</summary>
+        private const double ListWidthRatio = 0.6;
+
+        /// <summary>Share of the left column given to the group list, the folder list taking the rest.</summary>
+        private const double GroupListHeightRatio = 0.6;
+
+        /// <summary>Height of every field and every button of the form, in pixels.</summary>
+        private const int FieldHeight = 38;
+
+        /// <summary>The cards always go two to a row, each half the panel's width.</summary>
+        private const int CardsPerRow = 2;
+
+        /// <summary>At most this many lines of a list are shown in a report dialog.</summary>
+        private const int ReportLines = 8;
+
         // Fingerprints survive from one scan to the next, and from one run of
         // the program to the next: a second visual scan decodes almost nothing.
-        readonly FingerprintCache _fingerprints = new FingerprintCache();
-        bool _cacheLoaded;
+        private readonly FingerprintCache _fingerprints = new FingerprintCache();
+        private bool _cacheLoaded;
 
-        bool _suspendRules;              // guards the check boxes against echoing
-        bool _hasScanned;                // a scan has already filled the list at least once
+        private readonly FolderHistory _history = new FolderHistory();
+
+        // Scanning
+        private BackgroundWorker _scanWorker;
+        private ScanOptions _scanOptions;       // what the running (or last) scan was asked
+        private bool _hasScanned;               // a scan has filled the list at least once
+        private string _scannedRoot = "";       // full path of the folder the list was built from
+        private List<DupGroup> _groups = new List<DupGroup>();
+        private DupGroup _current;              // the group whose cards are shown
+
+        // Removing duplicates
+        private BackgroundWorker _removalWorker;
+        private DuplicateRemover _remover;
+        private RemovalJournal _journal;
+        private RemovalSettings _removalSettings;
+        private List<RemovalItem> _removalItems;
+
+        // Guards against events echoing while the code itself updates controls.
+        private bool _suspendRules;             // the Keep check boxes
+        private bool _suspendCards;             // the Keep buttons of the cards
+        private bool _fillingFolders;           // the Preferred folders list
 
         // Folders ticked in the Preferred folders list, full paths. Kept apart
         // from the list itself so a new scan of the same folder keeps the ticks.
-        readonly HashSet<string> _preferred = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        List<ScannedFolder> _folders = new List<ScannedFolder>();
-        string _foldersRoot = "";        // the scanned folder the list was built for
-        bool _fillingFolders;            // guards ItemChecked while the list is rebuilt
-
-        BackgroundWorker _worker;
-        List<DupGroup> _groups = new List<DupGroup>();
-        DupGroup _current;
-        bool _suspend;
-
-        // Remembered folders, one list per field.
-        const string KeyScan = "scan";
-        const string KeyDestination = "destination";
-        const string KeyWindow = "window";
-        const string AppVersion = "1.0";
-        readonly FolderHistory _history = new FolderHistory();
-
-        // Share of the window given to the group list when it first opens.
-        const double ListWidthRatio = 0.6;
+        private readonly HashSet<string> _preferred = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private List<ScannedFolder> _folders = new List<ScannedFolder>();
+        private string _foldersRoot = "";       // the scanned folder the list was built for
 
         // Sort state of the duplicate-group list.
-        int _sortColumn = 4;              // Reclaimable
-        bool _sortAscending;              // largest first
+        private int _sortColumn = GroupComparer.ColumnReclaimable;
+        private bool _sortAscending;            // largest first
 
         public MainForm()
         {
             ToolStripManager.RenderMode = ToolStripManagerRenderMode.System;
-            InitializeComponent();
+            InitializeComponent();              // builds every control: see MainForm.Designer.cs
 
             // What the designer cannot hold: values that depend on the machine,
             // on an embedded resource, or on a property it does not serialize.
-            Icon appIcon = Util.AppIcon();
+            Icon appIcon = UiStyle.AppIcon();
             if (appIcon != null) Icon = appIcon;
 
             _chkTrash.Enabled = Native.IsWindows;
             _progress.Visible = false;
-            _cboMatch.SelectedIndex = 0;
-            _cboSensitivity.SelectedIndex = 1;
-            _cboSensitivity.Enabled = false;      // visual matching only
-            _lblSensitivity.Enabled = false;
+
+            // Defaults: visual matching, strict sensitivity. The sensitivity is
+            // chosen first; selecting the mode then runs MatchModeChanged, which
+            // enables the sensitivity box and ticks "keep the best copy".
+            _cboSensitivity.SelectedIndex = 0;    // Strict - re-saved copies
+            _cboMatch.SelectedIndex = 1;          // Same picture (visual)
 
             SyncRuleMenu();
             TrashModeChanged();
@@ -82,13 +122,30 @@ namespace TwinPix
             RestorePlacement();
         }
 
+        /// <summary>True while a scan or a removal runs: nothing else may start.</summary>
+        private bool IsBusy
+        {
+            get { return IsScanning || IsRemoving; }
+        }
+
+        private bool IsScanning
+        {
+            get { return _scanWorker != null && _scanWorker.IsBusy; }
+        }
+
+        private bool IsRemoving
+        {
+            get { return _removalWorker != null && _removalWorker.IsBusy; }
+        }
+
         // ---------------------- Window plumbing -----------------------
 
         /// <summary>
-        /// Gives each group box the height its content ended up needing. An
-        /// auto-sizing GroupBox wrapped around a docked auto-sizing grid can
-        /// send the .NET Framework layout engine into a loop, so the size is
-        /// taken once, after the first layout pass.
+        /// Gives each group box the height its content ended up needing, and
+        /// hooks the handlers that keep the layout right while the window is
+        /// resized. An auto-sizing GroupBox wrapped around a docked auto-sizing
+        /// grid can send the .NET Framework layout engine into a loop, so the
+        /// size is taken once, after the first layout pass.
         /// </summary>
         protected override void OnLoad(EventArgs e)
         {
@@ -96,82 +153,40 @@ namespace TwinPix
             FitGroupBox(_sourceBox, _sourceGrid);
             FitGroupBox(_destBox, _destGrid);
 
-            // the option check boxes wrap when the window narrows, which changes
-            // the height the band needs
-            _sourceGrid.SizeChanged += delegate { FitGroupBox(_sourceBox, _sourceGrid); };
-            _destGrid.SizeChanged += delegate { FitGroupBox(_destBox, _destGrid); };
+            // Each band follows the height of its grid, should a row ever change
+            // height (a caption that wraps, a row added in the designer).
+            _sourceGrid.SizeChanged += (s, a) => FitGroupBox(_sourceBox, _sourceGrid);
+            _destGrid.SizeChanged += (s, a) => FitGroupBox(_destBox, _destGrid);
 
-            // the cards follow the width of the right-hand panel
-            _cards.SizeChanged += delegate { LayoutCards(); };
+            // The cards follow the width of the right-hand panel.
+            _cards.SizeChanged += (s, a) => LayoutCards();
 
-            // the extensions field is a multi-line box kept to one centred line
-            _txtExt.SizeChanged += delegate { Native.CenterSingleLine(_txtExt); };
-            _txtExt.TextChanged += delegate { KeepOnOneLine(_txtExt); };
-        }
-
-        /// <summary>Height of the selection field of every combo box, in pixels.</summary>
-        const int ComboFieldHeight = 26;
-
-        /// <summary>
-        /// The combo boxes are made taller than their font asks for, and the
-        /// extensions box - a multi-line box so that it can be as tall - gets
-        /// its line centred. Both need a live window handle.
-        /// </summary>
-        void ApplyFieldHeights()
-        {
-            foreach (ComboBox c in new ComboBox[] { _cboRoot, _cboMatch, _cboSensitivity, _cboQuarantine })
-                Native.SetComboFieldHeight(c, ComboFieldHeight);
-            Native.CenterSingleLine(_txtExt);
-        }
-
-        /// <summary>A pasted line break becomes a separator: the field holds one line.</summary>
-        static void KeepOnOneLine(TextBox t)
-        {
-            if (t.Text.IndexOf('\r') < 0 && t.Text.IndexOf('\n') < 0) return;
-            int caret = t.SelectionStart;
-            t.Text = t.Text.Replace("\r\n", ";").Replace('\r', ';').Replace('\n', ';');
-            t.SelectionStart = Math.Min(caret, t.Text.Length);
-        }
-
-        // The cards always go two to a row, each half the panel's width.
-        const int CardsPerRow = 2;
-
-        /// <summary>
-        /// Sizes every card to half the panel's width. Room for the vertical
-        /// scroll bar is always kept, so the bar showing up or going away never
-        /// changes the widths.
-        /// </summary>
-        void LayoutCards()
-        {
-            const int perRow = CardsPerRow;
-            int usable = _cards.Width - _cards.Padding.Horizontal
-                       - SystemInformation.VerticalScrollBarWidth;
-            if (usable <= 0 || _cards.Controls.Count == 0) return;
-
-            _cards.SuspendLayout();
-            foreach (Control c in _cards.Controls)
+            // The splitters are drawn as a band with a grip.
+            foreach (SplitContainer sc in new[] { _split, _splitLists })
             {
-                var card = c as FileCard;
-                if (card == null) continue;
-                card.SetCardWidth(usable / perRow - card.Margin.Horizontal);
+                SplitContainer target = sc;     // one variable per loop turn, captured by the lambdas
+                sc.Paint += PaintSplitter;
+                sc.SplitterMoved += (s, a) => target.Invalidate();
+                sc.SizeChanged += (s, a) => target.Invalidate();
             }
-            _cards.ResumeLayout(true);
+
+            // The extensions field is a multi-line box kept to one centred line.
+            _txtExt.SizeChanged += (s, a) => Native.CenterSingleLine(_txtExt);
+            _txtExt.TextChanged += (s, a) => KeepOnOneLine(_txtExt);
+
+            // A resized combo box puts its text field back at the top: centre it again.
+            foreach (ComboBox c in new[] { _cboRoot, _cboQuarantine })
+            {
+                ComboBox target = c;
+                c.SizeChanged += (s, a) => Native.CenterComboEdit(target);
+            }
         }
 
-        static void FitGroupBox(GroupBox box, Control content)
-        {
-            if (box == null || content == null) return;
-            int inner = Math.Max(content.Height, content.PreferredSize.Height);
-            int needed = inner + box.Padding.Vertical + 22;            // 22: the caption band
-            if (needed > 0 && needed != box.Height) box.Height = needed;
-        }
-
-        /// <summary>The group list gets three quarters of the window by default.</summary>
+        /// <summary>The finishing touches that need a live window handle.</summary>
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
 
-            // These need a live window handle, so they happen here.
             Native.UseExplorerTheme(_lv);
             Native.EnableDoubleBuffer(_lv);
             Native.UseExplorerTheme(_lvFolders);
@@ -184,8 +199,156 @@ namespace TwinPix
             ApplyListsLayout();
         }
 
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (IsRemoving)
+            {
+                // Closing now would stop the moves half-way through: the files
+                // would be safe, but the list and the report would be lost.
+                e.Cancel = true;
+                Native.Show(this, "TwinPix", "Duplicates are being moved",
+                            "Wait until it is done, or press STOP first.",
+                            MessageBoxButtons.OK, Native.DialogIcon.Information);
+                return;
+            }
+            if (IsScanning) _scanWorker.CancelAsync();
+            if (_cacheLoaded) _fingerprints.Save();
+            SavePlacement();
+            _history.Add(KeyScan, _cboRoot.Text);
+            _history.Add(KeyDestination, _cboQuarantine.Text);
+            _history.Save();
+            base.OnFormClosing(e);
+        }
+
+        /// <summary>
+        /// The combo boxes get their height in the designer: DrawMode is
+        /// OwnerDrawFixed and ItemHeight sets the height of the selection field
+        /// (the box is ItemHeight + 6). Two things are left for run time, and
+        /// need a live window handle: in the editable boxes (folder to scan,
+        /// destination) the text field is moved to the middle of that height,
+        /// and the extensions box - a multi-line box, the only kind of TextBox
+        /// that can be taller than its font - gets its line centred.
+        /// </summary>
+        private void ApplyFieldHeights()
+        {
+            foreach (ComboBox c in new[] { _cboRoot, _cboQuarantine })
+                Native.CenterComboEdit(c);
+            _txtExt.MinimumSize = new Size(0, FieldHeight);
+            _txtExt.Height = FieldHeight;
+            Native.CenterSingleLine(_txtExt);
+        }
+
+        /// <summary>
+        /// Draws one entry of an owner-drawn combo box - the selection field or a
+        /// row of the drop-down list - as the system would: themed colours,
+        /// greyed when the box is disabled, text centred on the row's height.
+        /// </summary>
+        private void Combo_DrawItem(object sender, DrawItemEventArgs e)
+        {
+            var combo = sender as ComboBox;      // PHP note: "as" gives null instead of failing
+            if (combo == null) return;
+            e.DrawBackground();
+            if (e.Index >= 0 && e.Index < combo.Items.Count)
+            {
+                bool disabled = (e.State & DrawItemState.Disabled) != 0 || !combo.Enabled;
+                bool selected = (e.State & DrawItemState.Selected) != 0;
+                Color fore = disabled ? SystemColors.GrayText
+                           : selected ? SystemColors.HighlightText
+                           : combo.ForeColor;
+                Rectangle r = Rectangle.FromLTRB(e.Bounds.Left + 3, e.Bounds.Top,
+                                                 e.Bounds.Right - 2, e.Bounds.Bottom);
+                TextRenderer.DrawText(e.Graphics, combo.GetItemText(combo.Items[e.Index]),
+                                      combo.Font, r, fore,
+                                      TextFormatFlags.Left | TextFormatFlags.VerticalCenter
+                                      | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix
+                                      | TextFormatFlags.SingleLine);
+            }
+            e.DrawFocusRectangle();
+        }
+
+        /// <summary>A pasted line break becomes a separator: the field holds one line.</summary>
+        private static void KeepOnOneLine(TextBox t)
+        {
+            if (t.Text.IndexOf('\r') < 0 && t.Text.IndexOf('\n') < 0) return;
+            int caret = t.SelectionStart;
+            t.Text = t.Text.Replace("\r\n", ";").Replace('\r', ';').Replace('\n', ';');
+            t.SelectionStart = Math.Min(caret, t.Text.Length);
+        }
+
+        /// <summary>
+        /// Sizes every card to half the panel's width. Room for the vertical
+        /// scroll bar is always kept, so the bar showing up or going away never
+        /// changes the widths.
+        /// </summary>
+        private void LayoutCards()
+        {
+            int usable = _cards.Width - _cards.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth;
+            if (usable <= 0 || _cards.Controls.Count == 0) return;
+
+            _cards.SuspendLayout();
+            foreach (Control c in _cards.Controls)
+            {
+                var card = c as FileCard;
+                if (card == null) continue;
+                card.SetCardWidth(usable / CardsPerRow - card.Margin.Horizontal);
+            }
+            _cards.ResumeLayout(true);
+        }
+
+        private static void FitGroupBox(GroupBox box, Control content)
+        {
+            if (box == null || content == null) return;
+            const int CaptionBand = 22;
+            int inner = Math.Max(content.Height, content.PreferredSize.Height);
+            int needed = inner + box.Padding.Vertical + CaptionBand;
+            if (needed > 0 && needed != box.Height) box.Height = needed;
+        }
+
+        /// <summary>
+        /// Draws the two splitters - between the lists and the thumbnails, and
+        /// between the group list and the folder list - as a visible band with a
+        /// grip in its middle, so it is plain where to grab them.
+        /// </summary>
+        private static void PaintSplitter(object sender, PaintEventArgs e)
+        {
+            var split = sender as SplitContainer;
+            if (split == null) return;
+            Rectangle r = split.SplitterRectangle;
+            if (r.Width <= 0 || r.Height <= 0) return;
+
+            using (var band = new SolidBrush(UiStyle.DividerGray))
+                e.Graphics.FillRectangle(band, r);
+
+            bool across = split.Orientation == Orientation.Horizontal;     // a horizontal bar
+            using (var edge = new Pen(UiStyle.BorderGray))
+            {
+                if (across)
+                {
+                    e.Graphics.DrawLine(edge, r.Left, r.Top, r.Right, r.Top);
+                    e.Graphics.DrawLine(edge, r.Left, r.Bottom - 1, r.Right, r.Bottom - 1);
+                }
+                else
+                {
+                    e.Graphics.DrawLine(edge, r.Left, r.Top, r.Left, r.Bottom);
+                    e.Graphics.DrawLine(edge, r.Right - 1, r.Top, r.Right - 1, r.Bottom);
+                }
+            }
+
+            // grip: five dots across the middle of the band
+            using (var dot = new SolidBrush(SystemColors.ControlDark))
+            {
+                int cx = r.Left + r.Width / 2, cy = r.Top + r.Height / 2;
+                for (int i = -2; i <= 2; i++)
+                {
+                    int x = across ? cx + i * 6 : cx;
+                    int y = across ? cy : cy + i * 6;
+                    e.Graphics.FillRectangle(dot, x - 1, y - 1, 3, 3);
+                }
+            }
+        }
+
         /// <summary>The duplicate groups get 60 % of the left column, the folders the rest.</summary>
-        void ApplyListsLayout()
+        private void ApplyListsLayout()
         {
             try
             {
@@ -193,23 +356,21 @@ namespace TwinPix
                 if (h < 100) return;
                 _splitLists.Panel1MinSize = 0;
                 _splitLists.Panel2MinSize = 0;
-                _splitLists.SplitterDistance = (int)(h * 0.6);
+                _splitLists.SplitterDistance = (int)(h * GroupListHeightRatio);
                 _splitLists.Panel1MinSize = Math.Min(80, h / 4);
                 _splitLists.Panel2MinSize = Math.Min(80, h / 4);
             }
-            catch
-            {
-                // a layout detail is never worth losing the window over
-            }
+            catch (InvalidOperationException) { }   // a layout detail is never worth losing the window over
+            catch (ArgumentException) { }
         }
 
         /// <summary>
-        /// Gives the group list three quarters of the width. The minimums are
-        /// cleared first, then the position, then the minimums again: each of
-        /// the three properties is validated against the other two, and any
-        /// other order can be rejected on a narrow window.
+        /// Gives the lists 60 % of the width. The minimums are cleared first,
+        /// then the position, then the minimums again: each of the three
+        /// properties is validated against the other two, and any other order
+        /// can be rejected on a narrow window.
         /// </summary>
-        void ApplySplitLayout()
+        private void ApplySplitLayout()
         {
             try
             {
@@ -232,29 +393,17 @@ namespace TwinPix
                 _split.Panel1MinSize = min1;
                 _split.Panel2MinSize = min2;
             }
-            catch
-            {
-                // a layout detail is never worth losing the window over
-            }
+            catch (InvalidOperationException) { }   // a layout detail is never worth losing the window over
+            catch (ArgumentException) { }
         }
 
-        protected override void OnFormClosing(FormClosingEventArgs e)
-        {
-            if (_worker != null && _worker.IsBusy) _worker.CancelAsync();
-            if (_cacheLoaded) _fingerprints.Save();
-            SavePlacement();
-            _history.Add(KeyScan, _cboRoot.Text);
-            _history.Add(KeyDestination, _cboQuarantine.Text);
-            _history.Save();
-            base.OnFormClosing(e);
-        }
-
-        void ShowAbout()
+        private void ShowAbout()
         {
             Native.Show(this, "About TwinPix", "TwinPix " + AppVersion,
-                "Finds duplicate images - by size and extension, by content, or by "
-                + "what the picture actually looks like - then moves the copies you "
-                + "do not keep to a folder of your choice or to the Recycle Bin.\r\n\r\n"
+                "Finds duplicate images - by content, or by what the picture "
+                + "actually looks like - then moves the copies you do not keep to a "
+                + "folder of your choice or to the Recycle Bin, after checking each "
+                + "one again against the copy that stays.\r\n\r\n"
                 + "Built with the C# compiler shipped with Windows.",
                 MessageBoxButtons.OK, Native.DialogIcon.Information);
         }
@@ -263,9 +412,8 @@ namespace TwinPix
         /// The Recycle Bin needs no destination: the folder field, its Browse
         /// button and the folder-structure box are greyed out while it is ticked.
         /// </summary>
-        void TrashModeChanged()
+        private void TrashModeChanged()
         {
-            if (_chkTrash == null) return;
             bool toFolder = !_chkTrash.Checked;
             _lblQuarantine.Enabled = toFolder;
             _cboQuarantine.Enabled = toFolder;
@@ -275,7 +423,7 @@ namespace TwinPix
             _miMoveAll.Text = toFolder ? "Move &all duplicates" : "Send &all duplicates to the trash";
         }
 
-        void EnableActions(bool on)
+        private void EnableActions(bool on)
         {
             _miMoveAll.Enabled = on;
             _miExport.Enabled = on;
@@ -286,17 +434,17 @@ namespace TwinPix
         // ---------------------- Folder fields -------------------------
 
         /// <summary>Loads a field's remembered folders, keeping what is typed in it.</summary>
-        void FillCombo(ComboBox c, string key)
+        private void FillCombo(ComboBox c, string key)
         {
             string current = c.Text;
             c.Items.Clear();
             List<string> list = _history.Get(key);
-            for (int i = 0; i < list.Count; i++) c.Items.Add(list[i]);
+            foreach (string folder in list) c.Items.Add(folder);
             c.Text = current.Length > 0 ? current : (list.Count > 0 ? list[0] : "");
         }
 
         /// <summary>Moves the field's current folder to the top of its history.</summary>
-        void RememberFolder(ComboBox c, string key)
+        private void RememberFolder(ComboBox c, string key)
         {
             _history.Add(key, c.Text);
             _history.Save();
@@ -304,14 +452,14 @@ namespace TwinPix
         }
 
         /// <summary>Empties one field's drop-down list, on disk as well.</summary>
-        void ClearHistory(ComboBox c, string key)
+        private void ClearHistory(ComboBox c, string key)
         {
             _history.Clear(key);
             _history.Save();
             FillCombo(c, key);
         }
 
-        void Browse(ComboBox target, string description, string historyKey)
+        private void Browse(ComboBox target, string description, string historyKey)
         {
             using (var dlg = new FolderBrowserDialog())
             {
@@ -326,24 +474,58 @@ namespace TwinPix
         }
 
         // ---------------------- Scanning ------------------------------
-        void StartScan()
+
+        /// <summary>Starts a scan - or, while one runs, cancels it (the button then reads CANCEL).</summary>
+        private void StartScan()
         {
-            if (_worker != null && _worker.IsBusy)
+            if (IsRemoving) return;
+            if (IsScanning)
             {
-                _worker.CancelAsync();
+                _scanWorker.CancelAsync();
                 _statusLabel.Text = "Cancelling...";
                 return;
             }
 
             string root = _cboRoot.Text.Trim();
-            if (!Directory.Exists(root))
+            if (!PathHelper.IsAbsolute(root) || !Directory.Exists(root))
             {
                 Native.Show(this, "TwinPix", "Choose a folder to scan",
-                            "The path is empty or no longer exists on this computer.",
+                            "Enter a full path, such as D:\\Photos, or use Browse. "
+                            + "The path is empty, incomplete, or no longer exists on this computer.",
                             MessageBoxButtons.OK, Native.DialogIcon.Warning);
                 return;
             }
 
+            ScanOptions options = ReadScanOptions(root);
+            if (options.Extensions.Count == 0)
+            {
+                Native.Show(this, "TwinPix", "Enter at least one extension",
+                            "The scan needs to know which files count as images, for example .jpg;.png",
+                            MessageBoxButtons.OK, Native.DialogIcon.Warning);
+                return;
+            }
+
+            RememberFolder(_cboRoot, KeyScan);
+
+            ClearResults();
+            _btnScan.Text = "CANCEL";
+            _progress.Visible = true;
+            _statusLabel.Text = "Scanning...";
+            Cursor = Cursors.AppStarting;
+
+            _scanOptions = options;
+            _scanWorker = new BackgroundWorker();
+            _scanWorker.WorkerReportsProgress = true;
+            _scanWorker.WorkerSupportsCancellation = true;
+            _scanWorker.DoWork += ScanWorker_DoWork;
+            _scanWorker.ProgressChanged += Worker_ProgressChanged;
+            _scanWorker.RunWorkerCompleted += ScanWorker_RunWorkerCompleted;
+            _scanWorker.RunWorkerAsync(options);
+        }
+
+        /// <summary>The scan options, from the controls.</summary>
+        private ScanOptions ReadScanOptions(string root)
+        {
             var o = new ScanOptions();
             o.Root = root;
             o.Recursive = _chkRecursive.Checked;
@@ -362,98 +544,108 @@ namespace TwinPix
                 }
                 o.Cache = _fingerprints;
             }
-            foreach (string raw in _txtExt.Text.Split(new char[] { ';', ',', ' ', '\r', '\n' },
+
+            foreach (string raw in _txtExt.Text.Split(new[] { ';', ',', ' ', '\r', '\n' },
                                                       StringSplitOptions.RemoveEmptyEntries))
             {
-                string e = raw.Trim().ToLowerInvariant();
-                if (e.Length == 0) continue;
-                if (!e.StartsWith(".")) e = "." + e;
-                o.Extensions.Add(e);
+                string ext = raw.Trim().ToLowerInvariant();
+                if (ext.Length == 0) continue;
+                if (!ext.StartsWith(".", StringComparison.Ordinal)) ext = "." + ext;
+                o.Extensions.Add(ext);
             }
-            if (o.Extensions.Count == 0)
+
+            // The destination of the moves is never scanned: the copies set
+            // aside there would come back as duplicates, and a keep rule could
+            // pick one of them as the copy to keep - sending the original after
+            // it. See ScanOptions.ExcludedFolders.
+            string dest = _cboQuarantine.Text.Trim();
+            if (PathHelper.IsAbsolute(dest) && PathHelper.IsStrictlyUnder(dest, root))
+                o.ExcludedFolders.Add(dest);
+            return o;
+        }
+
+        /// <summary>
+        /// Runs on the background thread: must not touch any control.
+        /// PHP note: this and the two handlers below are attached with "+="
+        /// in StartScan; the worker calls them at the right time, on the right
+        /// thread.
+        /// </summary>
+        private void ScanWorker_DoWork(object sender, DoWorkEventArgs e)
+        {
+            var worker = (BackgroundWorker)sender;
+            e.Result = Scanner.Scan((ScanOptions)e.Argument, worker);
+            // Scan() returns what it has when it is stopped; saying so here is
+            // what makes RunWorkerCompleted report a cancellation rather than
+            // an empty result.
+            if (worker.CancellationPending) e.Cancel = true;
+        }
+
+        /// <summary>Progress of a scan or of a removal, back on the UI thread: into the status bar.</summary>
+        private void Worker_ProgressChanged(object sender, ProgressChangedEventArgs e)
+        {
+            _statusLabel.Text = Convert.ToString(e.UserState, CultureInfo.CurrentCulture);
+        }
+
+        /// <summary>The scan is over. Back on the UI thread: the lists are filled.</summary>
+        private void ScanWorker_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
+        {
+            Cursor = Cursors.Default;
+            _progress.Visible = false;
+            _btnScan.Text = "&SCAN";
+
+            if (e.Error != null)
             {
-                Native.Show(this, "TwinPix", "Enter at least one extension",
-                            "The scan needs to know which files count as images, "
-                            + "for example .jpg;.png",
-                            MessageBoxButtons.OK, Native.DialogIcon.Warning);
+                _statusLabel.Text = "Error: " + e.Error.Message;
+                Native.Show(this, "TwinPix", "The scan failed", e.Error.Message,
+                            MessageBoxButtons.OK, Native.DialogIcon.Error);
+                return;
+            }
+            if (e.Cancelled || e.Result == null)
+            {
+                _statusLabel.Text = "Scan cancelled.";
                 return;
             }
 
-            RememberFolder(_cboRoot, KeyScan);
+            var result = (ScanResult)e.Result;
+            _hasScanned = true;
+            _groups = result.Groups;
+            _scannedRoot = PathHelper.NormalizeFolder(_scanOptions.Root);
+            FillGroups();
+            FillFolders(_scanOptions.Root, result.Folders);
+            ApplyRule();          // honour whatever is ticked in the Keep bar and folder list
 
-            ClearResults();
-            _btnScan.Text = "CANCEL";
-            _progress.Visible = true;
-            _statusLabel.Text = "Scanning...";
-            Cursor = Cursors.AppStarting;
+            bool visual = _scanOptions.Mode == MatchMode.Visual;
+            _statusLabel.Text = ScanReport(result, visual);
+            if (visual) _fingerprints.Save();
 
-            _worker = new BackgroundWorker();
-            _worker.WorkerReportsProgress = true;
-            _worker.WorkerSupportsCancellation = true;
-            _worker.DoWork += delegate(object s, DoWorkEventArgs e)
-            {
-                var self = (BackgroundWorker)s;
-                e.Result = Scanner.Scan(o, self);
-                // Scan() returns what it has when it is stopped; saying so here
-                // is what makes RunWorkerCompleted report a cancellation rather
-                // than an empty result.
-                if (self.CancellationPending) e.Cancel = true;
-            };
-            _worker.ProgressChanged += delegate(object s, ProgressChangedEventArgs e)
-            {
-                _statusLabel.Text = Convert.ToString(e.UserState);
-            };
-            _worker.RunWorkerCompleted += delegate(object s, RunWorkerCompletedEventArgs e)
-            {
-                Cursor = Cursors.Default;
-                _progress.Visible = false;
-                _btnScan.Text = "SCAN";
-
-                if (e.Error != null)
-                {
-                    _statusLabel.Text = "Error: " + e.Error.Message;
-                    Native.Show(this, "TwinPix", "The scan failed", e.Error.Message,
-                                MessageBoxButtons.OK, Native.DialogIcon.Error);
-                    return;
-                }
-                if (e.Cancelled || e.Result == null)
-                {
-                    _statusLabel.Text = "Scan cancelled.";
-                    return;
-                }
-
-                var res = (ScanResult)e.Result;
-                _hasScanned = true;
-                _groups = res.Groups;
-                FillGroups();
-                FillFolders(o.Root, res.Folders);
-                ApplyRule();          // honour whatever is ticked in the Keep bar and folder list
-
-                string report = res.FilesScanned + " image(s) scanned - "
-                              + _groups.Count + " duplicate group(s)";
-                if (o.Mode == MatchMode.Visual)
-                {
-                    report += " - " + res.Fingerprinted + " fingerprinted";
-                    if (res.FromCache > 0) report += ", " + res.FromCache + " from cache";
-                    if (res.Skipped > 0) report += " - " + res.Skipped + " too small or too plain";
-                    _fingerprints.Save();
-                }
-                if (res.Errors > 0) report += " - " + res.Errors + " unreadable item(s)";
-                _statusLabel.Text = report;
-
-                EnableActions(_groups.Count > 0);
-                if (_groups.Count == 0)
-                    Native.Show(this, "TwinPix", "No duplicates found",
-                                o.Mode == MatchMode.Visual
-                                ? "No two images in this folder look like the same picture.\r\n\r\n"
-                                  + "A looser sensitivity finds copies that were cropped or retouched."
-                                : "No two images in this folder have exactly the same bytes.",
-                                MessageBoxButtons.OK, Native.DialogIcon.Information);
-            };
-            _worker.RunWorkerAsync();
+            EnableActions(_groups.Count > 0);
+            if (_groups.Count == 0)
+                Native.Show(this, "TwinPix", "No duplicates found",
+                            visual
+                            ? "No two images in this folder look like the same picture.\r\n\r\n"
+                              + "A looser sensitivity finds copies that were cropped or retouched."
+                            : "No two images in this folder have exactly the same bytes.",
+                            MessageBoxButtons.OK, Native.DialogIcon.Information);
         }
 
-        void ClearResults()
+        /// <summary>One line for the status bar: what the scan found and what it left out.</summary>
+        private string ScanReport(ScanResult result, bool visual)
+        {
+            string report = result.FilesScanned + " image(s) scanned - " + _groups.Count + " duplicate group(s)";
+            if (visual)
+            {
+                report += " - " + result.Fingerprinted + " fingerprinted";
+                if (result.FromCache > 0) report += ", " + result.FromCache + " from cache";
+                if (result.Skipped > 0) report += " - " + result.Skipped + " too small, too plain or multi-page";
+            }
+            if (result.LinksIgnored > 0) report += " - " + result.LinksIgnored + " link(s) ignored";
+            if (result.OnlineOnly > 0) report += " - " + result.OnlineOnly + " online-only file(s) left out";
+            if (result.FoldersLeftOut > 0) report += " - " + result.FoldersLeftOut + " system, linked or destination folder(s) left out";
+            if (result.Errors > 0) report += " - " + result.Errors + " unreadable item(s)";
+            return report;
+        }
+
+        private void ClearResults()
         {
             _lv.Items.Clear();
             ClearCards();
@@ -466,27 +658,27 @@ namespace TwinPix
             EnableActions(false);
         }
 
-        void ClearCards()
+        private void ClearCards()
         {
             var old = new List<Control>();
             foreach (Control c in _cards.Controls) old.Add(c);
             _cards.Controls.Clear();
-            foreach (var c in old) c.Dispose();
+            foreach (Control c in old) c.Dispose();
         }
 
-        void FillGroups()
+        private void FillGroups()
         {
             _lv.BeginUpdate();
             _lv.ListViewItemSorter = null;      // one sort pass at the end, not one per row
             _lv.Items.Clear();
-            foreach (var g in _groups)
+            foreach (DupGroup g in _groups)
             {
                 var it = new ListViewItem(g.DisplayName);
                 it.ImageKey = EnsureFileIcon(g.Extension);
                 it.SubItems.Add(g.Extension);
-                it.SubItems.Add(Util.FormatSize(g.Size));
+                it.SubItems.Add(Format.FileSize(g.Size));
                 it.SubItems.Add(g.Files.Count.ToString(CultureInfo.InvariantCulture));
-                it.SubItems.Add(Util.FormatSize(g.Wasted));
+                it.SubItems.Add(Format.FileSize(g.Wasted));
                 it.SubItems.Add(KeptText(g));
                 it.Tag = g;
                 _lv.Items.Add(it);
@@ -497,30 +689,31 @@ namespace TwinPix
             if (_lv.Items.Count > 0) _lv.Items[0].Selected = true;
         }
 
-        static string KeptText(DupGroup g)
+        private static string KeptText(DupGroup g)
         {
-            var k = g.Kept;
+            FileEntry k = g.Kept;
             return k == null ? "(none)" : k.DirectoryPath;
         }
 
-        void UpdateSummary()
+        private void UpdateSummary()
         {
             long wasted = 0;
             int dups = 0;
-            foreach (var g in _groups) { wasted += g.Wasted; dups += g.Files.Count - 1; }
+            foreach (DupGroup g in _groups) { wasted += g.Wasted; dups += g.Files.Count - 1; }
             _paneGroups.Text = _groups.Count + " group(s)";
             _paneDuplicates.Text = dups + " duplicate(s)";
-            _paneReclaimable.Text = Util.FormatSize(wasted) + " reclaimable";
+            _paneReclaimable.Text = Format.FileSize(wasted) + " reclaimable";
         }
 
-        void ApplySort()
+        private void ApplySort()
         {
             _lv.ListViewItemSorter = new GroupComparer(_sortColumn, _sortAscending);
             _lv.Sort();
             Native.SetSortArrow(_lv, _sortColumn, _sortAscending);
         }
 
-        void ShowGroup(DupGroup g)
+        /// <summary>Shows the cards of one group on the right-hand side.</summary>
+        private void ShowGroup(DupGroup g)
         {
             ClearCards();
             if (g == null)
@@ -530,21 +723,20 @@ namespace TwinPix
             }
             // the panel is narrow by default, so the title stays short
             string sizes = g.SizesDiffer
-                         ? Util.FormatSize(g.SizeMin) + " to " + Util.FormatSize(g.Size)
-                         : Util.FormatSize(g.Size);
-            _lblGroupTitle.Text = sizes + " " + g.Extension
-                                + "  -  " + g.Files.Count + " files";
+                         ? Format.FileSize(g.SizeMin) + " to " + Format.FileSize(g.Size)
+                         : Format.FileSize(g.Size);
+            _lblGroupTitle.Text = sizes + " " + g.Extension + "  -  " + g.Files.Count + " files";
             _tip.SetToolTip(_lblGroupTitle,
                 g.Visual
                 ? g.Files.Count + " files showing the same picture, " + sizes
                   + "\r\nThe copies may differ in size, format and quality."
                   + "\r\nClick an image to mark it as the one to keep."
-                : g.Files.Count + " files of exactly " + Util.FormatSize(g.Size)
+                : g.Files.Count + " files of exactly " + Format.FileSize(g.Size)
                   + " with the " + g.Extension + " extension"
                   + "\r\nClick an image to mark it as the one to keep.");
             _cards.SuspendLayout();
-            _suspend = true;
-            foreach (var f in g.Files)
+            _suspendCards = true;
+            foreach (FileEntry f in g.Files)
             {
                 var card = new FileCard();
                 card.Bind(f, g.Visual, _tip);
@@ -552,18 +744,18 @@ namespace TwinPix
                 _cards.Controls.Add(card);
             }
             LayoutCards();
-            _suspend = false;
+            _suspendCards = false;
             _cards.ResumeLayout();
         }
 
         /// <summary>One card has been picked: every other one in the group lets go.</summary>
-        void CardKeepChanged(object sender, EventArgs e)
+        private void CardKeepChanged(object sender, EventArgs e)
         {
-            if (_suspend) return;
+            if (_suspendCards) return;
             var chosen = sender as FileCard;
             if (chosen == null || !chosen.KeepChecked) return;
 
-            _suspend = true;
+            _suspendCards = true;
             foreach (Control c in _cards.Controls)
             {
                 var card = c as FileCard;
@@ -573,18 +765,18 @@ namespace TwinPix
                 if (card.Entry != null) card.Entry.Keep = keep;
                 card.UpdateStyle();
             }
-            _suspend = false;
+            _suspendCards = false;
             RefreshCurrentRow();
         }
 
         /// <summary>Both the kept file and its folder change with the selection.</summary>
-        static void RefreshRow(ListViewItem item, DupGroup g)
+        private static void RefreshRow(ListViewItem item, DupGroup g)
         {
             item.Text = g.DisplayName;
-            item.SubItems[5].Text = KeptText(g);
+            item.SubItems[GroupComparer.ColumnKeptIn].Text = KeptText(g);
         }
 
-        void RefreshCurrentRow()
+        private void RefreshCurrentRow()
         {
             if (_current == null) return;
             foreach (ListViewItem it in _lv.Items)
@@ -600,24 +792,23 @@ namespace TwinPix
         // ---------------------- Keep rules ----------------------------
 
         /// <summary>The rule boxes, exactly one of which is always ticked.</summary>
-        CheckBox[] RuleChecks
+        private CheckBox[] RuleChecks
         {
             get
             {
-                return new CheckBox[] { _chkKeepOldest, _chkKeepNewest, _chkKeepShortest,
-                                        _chkKeepBest, _chkKeepLargest };
+                return new[] { _chkKeepOldest, _chkKeepNewest, _chkKeepShortest, _chkKeepBest, _chkKeepLargest };
             }
         }
 
-        Scanner.KeepRule CurrentRule
+        private KeepRule CurrentRule
         {
             get
             {
-                if (_chkKeepOldest.Checked) return Scanner.KeepRule.Oldest;
-                if (_chkKeepNewest.Checked) return Scanner.KeepRule.Newest;
-                if (_chkKeepBest.Checked) return Scanner.KeepRule.BestResolution;
-                if (_chkKeepLargest.Checked) return Scanner.KeepRule.LargestFile;
-                return Scanner.KeepRule.ShortestPath;
+                if (_chkKeepOldest.Checked) return KeepRule.Oldest;
+                if (_chkKeepNewest.Checked) return KeepRule.Newest;
+                if (_chkKeepBest.Checked) return KeepRule.BestResolution;
+                if (_chkKeepLargest.Checked) return KeepRule.LargestFile;
+                return KeepRule.ShortestPath;
             }
         }
 
@@ -625,7 +816,7 @@ namespace TwinPix
         /// Keeps the rule boxes mutually exclusive - and never all of them off
         /// - then re-applies the selection to every group.
         /// </summary>
-        void RuleChanged(CheckBox source)
+        private void RuleChanged(CheckBox source)
         {
             if (_suspendRules) return;
             _suspendRules = true;
@@ -655,7 +846,7 @@ namespace TwinPix
         /// "shortest path" says nothing useful, so the rule that keeps the best
         /// copy is turned on with it. The list is then rebuilt.
         /// </summary>
-        void MatchModeChanged()
+        private void MatchModeChanged()
         {
             bool visual = SelectedMode == MatchMode.Visual;
             _cboSensitivity.Enabled = visual;
@@ -664,30 +855,21 @@ namespace TwinPix
             ScanOptionChanged();
         }
 
-        MatchMode SelectedMode
+        private MatchMode SelectedMode
         {
-            get
-            {
-                if (_cboMatch == null) return MatchMode.Content;
-                switch (_cboMatch.SelectedIndex)
-                {
-                    case 1: return MatchMode.Visual;
-                    default: return MatchMode.Content;
-                }
-            }
+            get { return _cboMatch.SelectedIndex == 1 ? MatchMode.Visual : MatchMode.Content; }
         }
 
-        /// <summary>Bits out of 64 that two copies may differ by.</summary>
-        int SelectedDistance
+        /// <summary>Bits out of 64 that two copies may differ by, from the Sensitivity list.</summary>
+        private int SelectedDistance
         {
             get
             {
-                if (_cboSensitivity == null) return 6;
                 switch (_cboSensitivity.SelectedIndex)
                 {
-                    case 0: return 3;       // a re-saved or resized copy
-                    case 2: return 10;      // cropped edges, a light retouch
-                    default: return 6;
+                    case 0: return 3;       // Strict: a re-saved or resized copy
+                    case 2: return 10;      // Loose: cropped edges, a light retouch
+                    default: return 6;      // Normal
                 }
             }
         }
@@ -698,10 +880,9 @@ namespace TwinPix
         /// Before the first scan there is nothing to refresh, and while a scan is
         /// running the new setting simply applies to the next one.
         /// </summary>
-        void ScanOptionChanged()
+        private void ScanOptionChanged()
         {
-            if (!_hasScanned) return;
-            if (_worker != null && _worker.IsBusy) return;
+            if (!_hasScanned || IsBusy) return;
             StartScan();
         }
 
@@ -712,32 +893,28 @@ namespace TwinPix
         /// as preferred. Ticks survive a new scan of the same folder; a different
         /// folder starts with none.
         /// </summary>
-        void FillFolders(string root, List<ScannedFolder> folders)
+        private void FillFolders(string root, List<ScannedFolder> folders)
         {
-            string fullRoot = SafeFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
+            // NormalizeFolder keeps the separator of a drive root: "C:\", never
+            // "C:" - which Windows reads as "the current folder of drive C".
+            string fullRoot = PathHelper.NormalizeFolder(root);
             if (!string.Equals(fullRoot, _foldersRoot, StringComparison.OrdinalIgnoreCase))
                 _preferred.Clear();
             _foldersRoot = fullRoot;
 
             _folders = new List<ScannedFolder>();
-            foreach (var f in folders)
+            foreach (ScannedFolder f in folders)
             {
-                // compared with FileEntry.DirectoryPath, which is a full path
-                f.Path = SafeFullPath(f.Path).TrimEnd(Path.DirectorySeparatorChar);
+                // the same form as FileEntry.DirectoryPath, which the ticks are compared with
+                f.Path = PathHelper.NormalizeFolder(f.Path);
                 // the scanned folder itself is not offered: preferring it would prefer everything
                 if (string.Equals(f.Path, fullRoot, StringComparison.OrdinalIgnoreCase)) continue;
                 _folders.Add(f);
             }
-            _folders.Sort(delegate(ScannedFolder a, ScannedFolder b)
-            {
-                return string.Compare(a.Path, b.Path, StringComparison.OrdinalIgnoreCase);
-            });
+            _folders.Sort((a, b) => string.Compare(a.Path, b.Path, StringComparison.OrdinalIgnoreCase));
 
             // ticks on folders that are gone are dropped
-            var still = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var f in _folders) if (_preferred.Contains(f.Path)) still.Add(f.Path);
-            _preferred.Clear();
-            _preferred.UnionWith(still);
+            _preferred.IntersectWith(_folders.Select(f => f.Path));
 
             Dictionary<string, int> inGroups = FilesInGroupsPerFolder();
 
@@ -746,7 +923,7 @@ namespace TwinPix
             try
             {
                 _lvFolders.Items.Clear();
-                foreach (var f in _folders)
+                foreach (ScannedFolder f in _folders)
                 {
                     var it = new ListViewItem(RelativeFolder(f.Path));
                     it.SubItems.Add(f.Images.ToString(CultureInfo.InvariantCulture));
@@ -764,14 +941,12 @@ namespace TwinPix
                 _lvFolders.EndUpdate();
                 _fillingFolders = false;
             }
-            _lblFolders.Text = _folders.Count == 0
-                             ? "&Preferred folders - no subfolder"
-                             : "&Preferred folders";
+            _lblFolders.Text = _folders.Count == 0 ? "&Preferred folders - no subfolder" : "&Preferred folders";
             SyncPreferredBox();
         }
 
         /// <summary>After a move the counts change; the ticks and the order do not.</summary>
-        void RefreshFolderCounts()
+        private void RefreshFolderCounts()
         {
             Dictionary<string, int> inGroups = FilesInGroupsPerFolder();
             _lvFolders.BeginUpdate();
@@ -788,40 +963,31 @@ namespace TwinPix
         }
 
         /// <summary>How many files of the duplicate groups sit directly in each folder.</summary>
-        Dictionary<string, int> FilesInGroupsPerFolder()
+        private Dictionary<string, int> FilesInGroupsPerFolder()
         {
             var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach (var g in _groups)
-                foreach (var f in g.Files)
+            foreach (DupGroup g in _groups)
+                foreach (FileEntry f in g.Files)
                 {
-                    string dir = f.DirectoryPath ?? "";
+                    string dir = f.DirectoryPath;
                     int n;
-                    counts.TryGetValue(dir, out n);
+                    counts.TryGetValue(dir, out n);     // n stays 0 when the folder is not counted yet
                     counts[dir] = n + 1;
                 }
             return counts;
         }
 
-        string RelativeFolder(string path)
+        private string RelativeFolder(string path)
         {
-            string full = SafeFullPath(path);
-            if (_foldersRoot.Length > 0
-                && full.StartsWith(_foldersRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-                return full.Substring(_foldersRoot.Length + 1);
-            return full;
-        }
-
-        static string SafeFullPath(string path)
-        {
-            try { return Path.GetFullPath(path); }
-            catch { return path ?? ""; }
+            string relative = PathHelper.RelativePath(path, _foldersRoot);
+            return string.IsNullOrEmpty(relative) ? PathHelper.FullPathOrSelf(path) : relative;
         }
 
         /// <summary>
         /// The Preferred folders box of the Keep bar follows the list: available
         /// and ticked as soon as one folder is, greyed out and clear when none is.
         /// </summary>
-        void SyncPreferredBox()
+        private void SyncPreferredBox()
         {
             bool any = _preferred.Count > 0;
             if (_chkKeepPreferred.Enabled == any) return;
@@ -832,27 +998,51 @@ namespace TwinPix
             SyncRuleMenu();
         }
 
-        /// <summary>One folder ticked or unticked: the selection is redone at once.</summary>
-        void PreferredFolderToggled(ListViewItem item)
+        /// <summary>
+        /// One folder ticked or unticked: every folder below it follows, then the
+        /// selection is redone at once. Unticking a subfolder afterwards leaves
+        /// its parent ticked - the parent's own files stay preferred.
+        /// </summary>
+        private void PreferredFolderToggled(ListViewItem item)
         {
             if (_fillingFolders || item == null) return;
             var f = item.Tag as ScannedFolder;
             if (f == null) return;
-            if (item.Checked) _preferred.Add(f.Path);
-            else _preferred.Remove(f.Path);
+
+            bool on = item.Checked;
+            _fillingFolders = true;                 // the ticks below are not new clicks
+            _lvFolders.BeginUpdate();
+            try
+            {
+                foreach (ListViewItem it in _lvFolders.Items)
+                {
+                    var sub = it.Tag as ScannedFolder;
+                    if (sub == null) continue;
+                    bool concerned = ReferenceEquals(sub, f) || PathHelper.IsStrictlyUnder(sub.Path, f.Path);
+                    if (!concerned) continue;
+                    if (it.Checked != on) it.Checked = on;
+                    if (on) _preferred.Add(sub.Path);
+                    else _preferred.Remove(sub.Path);
+                }
+            }
+            finally
+            {
+                _lvFolders.EndUpdate();
+                _fillingFolders = false;
+            }
             SyncPreferredBox();
             ApplyRule();
         }
 
         /// <summary>Is this file directly inside one of the ticked folders?</summary>
-        bool IsInPreferredFolder(FileEntry f)
+        private bool IsInPreferredFolder(FileEntry f)
         {
             if (_preferred.Count == 0 || f == null) return false;
             string dir = f.DirectoryPath;
-            return !string.IsNullOrEmpty(dir) && _preferred.Contains(dir);
+            return dir.Length > 0 && _preferred.Contains(dir);
         }
 
-        void SyncRuleMenu()
+        private void SyncRuleMenu()
         {
             _miKeepPreferred.Checked = _chkKeepPreferred.Checked;
             _miKeepPreferred.Enabled = _chkKeepPreferred.Enabled;
@@ -864,34 +1054,43 @@ namespace TwinPix
         }
 
         /// <summary>Applies the current rule to every group, always.</summary>
-        void ApplyRule()
+        private void ApplyRule()
         {
             if (_groups.Count == 0) return;
             bool preferFolder = _chkKeepPreferred.Enabled && _chkKeepPreferred.Checked;
 
             // The ticks can change at any time after the scan, so which files
             // count as preferred is worked out again here.
-            foreach (var g in _groups)
-                foreach (var f in g.Files)
+            foreach (DupGroup g in _groups)
+                foreach (FileEntry f in g.Files)
                     f.InPreferred = preferFolder && IsInPreferredFolder(f);
 
-            foreach (var g in _groups) Scanner.AutoSelect(g, CurrentRule, preferFolder);
+            foreach (DupGroup g in _groups) KeepSelector.AutoSelect(g, CurrentRule, preferFolder);
             foreach (ListViewItem it in _lv.Items)
             {
                 var g = it.Tag as DupGroup;
                 if (g != null) RefreshRow(it, g);
             }
-            if (_sortColumn == 0 || _sortColumn == 5) _lv.Sort();
+            if (_sortColumn == GroupComparer.ColumnKeptFile || _sortColumn == GroupComparer.ColumnKeptIn) _lv.Sort();
             ShowGroup(_current);
         }
 
-        // ---------------------- Moving --------------------------------
-        void MoveAllDuplicates()
-        {
-            var targets = new List<DupGroup>();
-            targets.AddRange(_groups);
+        // ---------------------- Removing duplicates -------------------
+        //
+        //  1. RemoveDuplicates (UI thread) validates the destination, fixes the
+        //     list of files (DuplicateRemover.Plan), checks the Recycle Bin,
+        //     asks for confirmation and opens the journal.
+        //  2. RemovalWorker_DoWork (background) checks every file once more
+        //     against its kept copy and, in folder mode, moves it.
+        //  3. RemovalWorker_RunWorkerCompleted (UI thread) sends the checked
+        //     files to the Recycle Bin (bin mode), then updates the lists and
+        //     reports what happened to every file.
 
-            if (targets.Count == 0)
+        /// <summary>MOVE ALL / TRASH ALL: removes the duplicates of every group.</summary>
+        private void RemoveDuplicates()
+        {
+            if (IsBusy) return;
+            if (_groups.Count == 0)
             {
                 Native.Show(this, "TwinPix", "Nothing to move",
                             "Scan a folder first: the list holds no duplicate group.",
@@ -899,51 +1098,19 @@ namespace TwinPix
                 return;
             }
 
-            bool toTrash = _chkTrash.Checked;
-            string dest = _cboQuarantine.Text.Trim();
-            string root = _cboRoot.Text.Trim();
-
-            if (!toTrash)
+            var settings = new RemovalSettings();
+            settings.ToRecycleBin = _chkTrash.Checked;
+            settings.KeepFolderStructure = _chkPreserveTree.Checked;
+            settings.ScanRoot = _scannedRoot;
+            if (!settings.ToRecycleBin)
             {
-                if (dest.Length == 0)
-                {
-                    Native.Show(this, "TwinPix", "Choose where the duplicates should go",
-                                "Fill in the destination folder at the bottom of the window, "
-                                + "or tick Move to trash.",
-                                MessageBoxButtons.OK, Native.DialogIcon.Warning);
-                    return;
-                }
-                try
-                {
-                    if (!Directory.Exists(dest)) Directory.CreateDirectory(dest);
-                }
-                catch (Exception ex)
-                {
-                    Native.Show(this, "TwinPix", "The destination folder cannot be used", ex.Message,
-                                MessageBoxButtons.OK, Native.DialogIcon.Error);
-                    return;
-                }
-
-                RememberFolder(_cboQuarantine, KeyDestination);
-
-                if (Scanner.IsUnder(dest, root))
-                {
-                    DialogResult r = Native.Show(this, "TwinPix",
-                        "The destination is inside the folder being scanned",
-                        "Duplicates moved there will be found again by the next scan.\r\n\r\n"
-                        + "Continue anyway?",
-                        MessageBoxButtons.YesNo, Native.DialogIcon.Warning);
-                    if (r != DialogResult.Yes) return;
-                }
+                string dest = CheckDestination();
+                if (dest == null) return;
+                settings.Destination = dest;
             }
 
-            int toMove = 0, noKeep = 0;
-            foreach (var g in targets)
-            {
-                if (g.Kept == null) { noKeep++; continue; }
-                toMove += g.Files.Count - 1;
-            }
-            if (toMove == 0)
+            List<RemovalItem> items = DuplicateRemover.Plan(_groups);
+            if (items.Count == 0)
             {
                 Native.Show(this, "TwinPix", "Nothing to move",
                             "No image is marked as the one to keep, so every copy would be lost.",
@@ -951,116 +1118,201 @@ namespace TwinPix
                 return;
             }
 
-            string detail = toTrash
-                ? "They go to the Windows Recycle Bin, and can be put back from there.\r\n\r\n"
-                  + "The copy marked in each group stays where it is."
-                : "They are moved to:\r\n" + dest
-                  + "\r\n\r\nThe copy marked in each group stays where it is. "
-                  + "Nothing is deleted.";
-            if (noKeep > 0)
-                detail += "\r\n\r\n" + noKeep
-                        + " group(s) will be skipped: no file is marked as the one to keep.";
-            if (Native.Show(this, "TwinPix",
-                            (toTrash ? "Send " : "Move ") + toMove + " duplicate file(s)"
-                            + (toTrash ? " to the Recycle Bin?" : "?"), detail,
-                            MessageBoxButtons.OKCancel, Native.DialogIcon.Warning) != DialogResult.OK)
-                return;
-
-            int moved = 0;
-            var errors = new List<string>();
-            Cursor = Cursors.WaitCursor;
-
-            if (toTrash)
+            if (settings.ToRecycleBin)
             {
-                MoveToRecycleBin(targets, ref moved, errors);
-                Cursor = Cursors.Default;
-                FinishMove(moved, errors, "the Recycle Bin");
-                return;
-            }
-
-            foreach (var g in targets)
-            {
-                var keep = g.Kept;
-                if (keep == null) continue;
-
-                var movedEntries = new List<FileEntry>();
-                foreach (var f in g.Files)
+                string why = RecycleBin.WhyNotAvailable(items.Select(i => i.Duplicate.FullPath).ToList());
+                if (why != null)
                 {
-                    if (ReferenceEquals(f, keep)) continue;
-                    try
-                    {
-                        string targetDir = dest;
-                        if (_chkPreserveTree.Checked && Scanner.IsUnder(f.FullPath, root))
-                        {
-                            string rel = Path.GetDirectoryName(f.FullPath)
-                                             .Substring(Path.GetFullPath(root)
-                                             .TrimEnd(Path.DirectorySeparatorChar).Length)
-                                             .TrimStart(Path.DirectorySeparatorChar);
-                            if (rel.Length > 0) targetDir = Path.Combine(dest, rel);
-                        }
-                        if (!Directory.Exists(targetDir)) Directory.CreateDirectory(targetDir);
-                        string finalPath = Util.UniqueDestination(targetDir, f.FileName);
-                        File.Move(f.FullPath, finalPath);
-                        movedEntries.Add(f);
-                        moved++;
-                    }
-                    catch (Exception ex)
-                    {
-                        errors.Add(f.FullPath + " : " + ex.Message);
-                    }
+                    Native.Show(this, "TwinPix", "The Recycle Bin cannot be used here",
+                                why + "\r\n\r\nNothing was moved. Untick \"Move to trash\" to move the "
+                                + "duplicates to a folder of your choice instead.",
+                                MessageBoxButtons.OK, Native.DialogIcon.Warning);
+                    return;
                 }
-                foreach (var f in movedEntries) g.Files.Remove(f);
             }
 
-            Cursor = Cursors.Default;
-            FinishMove(moved, errors, dest);
+            string journalPath = settings.ToRecycleBin
+                               ? RemovalJournal.RecycleBinJournalPath
+                               : Path.Combine(settings.Destination, RemovalJournal.FileName);
+            if (!Native.ConfirmRisky(this, "TwinPix", ConfirmTitle(settings, items.Count),
+                                     ConfirmText(settings, journalPath)))
+                return;
+
+            try { _journal = RemovalJournal.Open(journalPath); }
+            catch (Exception ex)
+            {
+                if (!PathHelper.IsFileSystemError(ex)) throw;
+                Native.Show(this, "TwinPix", "The journal cannot be written",
+                            ex.Message + "\r\n\r\nNothing was moved: every move is recorded in\r\n" + journalPath,
+                            MessageBoxButtons.OK, Native.DialogIcon.Error);
+                return;
+            }
+
+            _removalSettings = settings;
+            _removalItems = items;
+            _remover = new DuplicateRemover(settings, _journal);
+            SetRemoving(true);
+
+            _removalWorker = new BackgroundWorker();
+            _removalWorker.WorkerReportsProgress = true;
+            _removalWorker.WorkerSupportsCancellation = true;
+            _removalWorker.DoWork += RemovalWorker_DoWork;
+            _removalWorker.ProgressChanged += Worker_ProgressChanged;
+            _removalWorker.RunWorkerCompleted += RemovalWorker_RunWorkerCompleted;
+            _removalWorker.RunWorkerAsync();
         }
 
         /// <summary>
-        /// Hands every duplicate of the given groups to the shell in one call, so
-        /// the whole batch is a single entry in Explorer's Undo. The shell reports
-        /// one code for the lot, so what actually left is checked file by file.
+        /// The destination folder, created if needed, as a full path - or null
+        /// after telling the user why it cannot be used.
         /// </summary>
-        void MoveToRecycleBin(List<DupGroup> targets, ref int moved, List<string> errors)
+        private string CheckDestination()
         {
-            var owners = new List<DupGroup>();
-            var victims = new List<FileEntry>();
-            var paths = new List<string>();
-            foreach (var g in targets)
+            string dest = _cboQuarantine.Text.Trim();
+            string problem = null;
+            if (dest.Length == 0)
+                problem = "Fill in the destination folder at the bottom of the window, or tick Move to trash.";
+            else if (!PathHelper.IsAbsolute(dest))
+                problem = "Enter a full path, such as D:\\Duplicates - a partial path would depend on "
+                        + "the program's current folder.";
+            else if (_scannedRoot.Length > 0 && PathHelper.IsSameOrUnder(_scannedRoot, dest))
+                problem = "The destination is the scanned folder, or contains it. Choose a separate folder, "
+                        + "so that the duplicates set aside never mix with the pictures they duplicate.";
+            if (problem != null)
             {
-                var keep = g.Kept;
-                if (keep == null) continue;
-                foreach (var f in g.Files)
-                {
-                    if (ReferenceEquals(f, keep)) continue;
-                    owners.Add(g);
-                    victims.Add(f);
-                    paths.Add(f.FullPath);
-                }
+                Native.Show(this, "TwinPix", "Choose where the duplicates should go", problem,
+                            MessageBoxButtons.OK, Native.DialogIcon.Warning);
+                return null;
             }
-            if (paths.Count == 0) return;
 
-            string failure = Native.SendToRecycleBin(this, paths);
-
-            for (int i = 0; i < victims.Count; i++)
+            try { Directory.CreateDirectory(dest); }
+            catch (Exception ex)
             {
-                if (File.Exists(victims[i].FullPath))
-                {
-                    errors.Add(victims[i].FullPath
-                               + (failure == null ? " : still on disk" : " : " + failure));
-                    continue;
-                }
-                owners[i].Files.Remove(victims[i]);
-                moved++;
+                if (!PathHelper.IsFileSystemError(ex)) throw;
+                Native.Show(this, "TwinPix", "The destination folder cannot be used", ex.Message,
+                            MessageBoxButtons.OK, Native.DialogIcon.Error);
+                return null;
+            }
+            RememberFolder(_cboQuarantine, KeyDestination);
+            return PathHelper.NormalizeFolder(dest);
+        }
+
+        private static string ConfirmTitle(RemovalSettings settings, int count)
+        {
+            return settings.ToRecycleBin
+                 ? "Send " + count + " duplicate file(s) to the Recycle Bin?"
+                 : "Move " + count + " duplicate file(s)?";
+        }
+
+        private string ConfirmText(RemovalSettings settings, string journalPath)
+        {
+            var sb = new StringBuilder();
+            if (settings.ToRecycleBin)
+                sb.Append("They go to the Windows Recycle Bin, and can be restored from there.");
+            else
+                sb.Append("They are moved to:\r\n").Append(settings.Destination).Append("\r\nNothing is deleted.");
+            sb.Append("\r\n\r\nThe copy marked in each group stays where it is. Just before each file "
+                      + "moves, it is checked once more against that copy; a file that no longer "
+                      + "matches it stays where it is.");
+            if (_groups.Any(g => g.Visual))
+                sb.Append("\r\n\r\nThese groups were matched by appearance, not by content: two different "
+                          + "photos of the same scene can end up together. If in doubt, look through "
+                          + "the groups first.");
+            sb.Append("\r\n\r\nEvery file moved is listed in:\r\n").Append(journalPath);
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Locks the window while files are being moved - nothing may change the
+        /// groups meanwhile - except for the MOVE ALL button, which becomes STOP.
+        /// </summary>
+        private void SetRemoving(bool busy)
+        {
+            _menu.Enabled = !busy;
+            _sourceBox.Enabled = !busy;
+            _centre.Enabled = !busy;
+            _chkTrash.Enabled = !busy && Native.IsWindows;
+            _progress.Visible = busy;
+            Cursor = busy ? Cursors.AppStarting : Cursors.Default;
+            if (busy)
+            {
+                _lblQuarantine.Enabled = false;
+                _cboQuarantine.Enabled = false;
+                _btnQuarantine.Enabled = false;
+                _chkPreserveTree.Enabled = false;
+                _btnMoveAll.Text = "&STOP";
+            }
+            else
+            {
+                TrashModeChanged();                 // puts the destination controls and the caption back
             }
         }
 
-        /// <summary>Rebuilds the list after a move and reports what happened.</summary>
-        void FinishMove(int moved, List<string> errors, string where)
+        /// <summary>Background thread: checks every file and, in folder mode, moves it.</summary>
+        private void RemovalWorker_DoWork(object sender, DoWorkEventArgs e)
         {
-            // drop groups that no longer hold duplicates
+            _remover.Run(_removalItems, (BackgroundWorker)sender);
+        }
+
+        /// <summary>UI thread: finishes a Recycle Bin removal, then reports.</summary>
+        private void RemovalWorker_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
+        {
+            bool stopped = _removalWorker.CancellationPending;
+            try
+            {
+                if (e.Error == null && !stopped && _removalSettings.ToRecycleBin)
+                    _remover.SendCheckedToRecycleBin(this, _removalItems);
+            }
+            finally
+            {
+                // PHP note: "finally" runs whatever happened above, exceptions
+                // included - the journal is always closed and the window unlocked.
+                _journal.Dispose();
+                SetRemoving(false);
+            }
+
+            FinishRemoval(_removalItems, _removalSettings, _journal.Path, stopped, e.Error);
+            _journal = null;
+            _remover = null;
+            _removalItems = null;
+        }
+
+        /// <summary>Takes the files that left out of their groups, refreshes the lists and reports.</summary>
+        private void FinishRemoval(List<RemovalItem> items, RemovalSettings settings, string journalPath,
+                                   bool stopped, Exception error)
+        {
+            int removed = 0, leftInPlace = 0, failed = 0, notReached = 0;
+            var reasons = new Dictionary<string, int>();
+            var failures = new List<string>();
+            foreach (RemovalItem item in items)
+            {
+                switch (item.Outcome)
+                {
+                    case RemovalOutcome.Moved:
+                    case RemovalOutcome.Recycled:
+                        item.Group.Files.Remove(item.Duplicate);
+                        removed++;
+                        break;
+                    case RemovalOutcome.LeftInPlace:
+                        leftInPlace++;
+                        string reason = item.Detail ?? "not checked";
+                        int n;
+                        reasons.TryGetValue(reason, out n);
+                        reasons[reason] = n + 1;
+                        break;
+                    case RemovalOutcome.Failed:
+                        failed++;
+                        failures.Add(item.Duplicate.FullPath + " : " + item.Detail);
+                        break;
+                    default:
+                        notReached++;
+                        break;
+                }
+            }
+
+            // drop the groups that no longer hold duplicates
             var remaining = new List<DupGroup>();
-            foreach (var g in _groups)
+            foreach (DupGroup g in _groups)
                 if (g.Files.Count > 1) { g.Recompute(); remaining.Add(g); }
             _groups = remaining;
 
@@ -1069,20 +1321,42 @@ namespace TwinPix
             if (_lv.Items.Count == 0) { _current = null; ClearCards(); _lblGroupTitle.Text = "No group left"; }
             EnableActions(_groups.Count > 0);
 
-            string report = "They are now in " + where;
-            if (errors.Count > 0)
+            string where = settings.ToRecycleBin ? "the Recycle Bin" : settings.Destination;
+            string verb = settings.ToRecycleBin ? "sent to the Recycle Bin" : "moved";
+            _statusLabel.Text = removed + " file(s) " + verb
+                              + (leftInPlace + failed > 0 ? " - " + (leftInPlace + failed) + " left in place" : "");
+
+            var sb = new StringBuilder();
+            if (removed > 0) sb.Append("They are now in ").Append(where).Append(".\r\n\r\n");
+            if (stopped && notReached > 0)
+                sb.Append(notReached).Append(" file(s) were not handled: the operation was stopped.\r\n\r\n");
+            if (error != null)
+                sb.Append("The operation stopped on an error: ").Append(error.Message).Append("\r\n\r\n");
+            if (leftInPlace > 0)
             {
-                report = errors.Count + " file(s) could not be moved:\r\n"
-                       + string.Join("\r\n", errors.Take(10).ToArray());
-                if (errors.Count > 10) report += "\r\n...";
+                sb.Append(leftInPlace).Append(" file(s) left in place after the last check:\r\n");
+                foreach (KeyValuePair<string, int> kv in reasons.OrderByDescending(r => r.Value).Take(ReportLines))
+                    sb.Append("  ").Append(kv.Value).Append(" x ").Append(kv.Key).Append("\r\n");
+                sb.Append("\r\n");
             }
-            _statusLabel.Text = moved + " file(s) moved to " + where;
-            Native.Show(this, "TwinPix", moved + " file(s) moved", report, MessageBoxButtons.OK,
-                        errors.Count > 0 ? Native.DialogIcon.Warning : Native.DialogIcon.Information);
+            if (failed > 0)
+            {
+                sb.Append(failed).Append(" file(s) could not be moved:\r\n");
+                foreach (string line in failures.Take(ReportLines)) sb.Append("  ").Append(line).Append("\r\n");
+                if (failures.Count > ReportLines) sb.Append("  ...\r\n");
+                sb.Append("\r\n");
+            }
+            if (removed > 0) sb.Append("Journal: ").Append(journalPath);
+
+            bool clean = leftInPlace == 0 && failed == 0 && error == null && !stopped;
+            Native.Show(this, "TwinPix", removed + " file(s) " + verb, sb.ToString().TrimEnd(),
+                        MessageBoxButtons.OK, clean ? Native.DialogIcon.Information : Native.DialogIcon.Warning);
         }
 
         // ---------------------- Export CSV ----------------------------
-        void ExportCsv()
+
+        /// <summary>Writes the whole list - every file of every group, kept or not - to a CSV file.</summary>
+        private void ExportCsv()
         {
             if (_groups.Count == 0) return;
             using (var dlg = new SaveFileDialog())
@@ -1095,19 +1369,19 @@ namespace TwinPix
                     var sb = new StringBuilder();
                     sb.AppendLine("Group;File;Folder;Size (bytes);Dimensions;Modified;Action");
                     int n = 0;
-                    foreach (var g in _groups)
+                    foreach (DupGroup g in _groups)
                     {
                         n++;
-                        foreach (var f in g.Files)
+                        foreach (FileEntry f in g.Files)
                         {
-                            sb.AppendLine(string.Join(";", new string[]
+                            sb.AppendLine(string.Join(";", new[]
                             {
                                 n.ToString(CultureInfo.InvariantCulture),
                                 Csv(f.FileName),
                                 Csv(f.DirectoryPath),
                                 f.Size.ToString(CultureInfo.InvariantCulture),
                                 f.Dimensions,
-                                f.Modified.ToString("yyyy-MM-dd HH:mm:ss"),
+                                f.Modified.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
                                 f.Keep ? "KEEP" : "duplicate"
                             }));
                         }
@@ -1117,13 +1391,15 @@ namespace TwinPix
                 }
                 catch (Exception ex)
                 {
+                    if (!PathHelper.IsFileSystemError(ex)) throw;
                     Native.Show(this, "TwinPix", "The export failed", ex.Message,
                                 MessageBoxButtons.OK, Native.DialogIcon.Error);
                 }
             }
         }
 
-        static string Csv(string s)
+        /// <summary>Quotes a CSV field when it holds a separator or a quote.</summary>
+        private static string Csv(string s)
         {
             if (s == null) return "";
             if (s.IndexOf(';') >= 0 || s.IndexOf('"') >= 0)
@@ -1131,23 +1407,26 @@ namespace TwinPix
             return s;
         }
 
-        /// <summary>Caches the shell icon of an extension and returns its key.</summary>
-        string EnsureFileIcon(string extension)
+        /// <summary>Caches the shell icon of an extension and returns its key in the image list.</summary>
+        private string EnsureFileIcon(string extension)
         {
             if (_fileIcons == null || string.IsNullOrEmpty(extension)) return null;
             if (_fileIcons.Images.ContainsKey(extension)) return extension;
             Icon icon = Native.FileTypeIcon(extension);
             if (icon == null) return null;
-            try { _fileIcons.Images.Add(extension, icon); }
-            catch { return null; }
+            try
+            {
+                _fileIcons.Images.Add(extension, icon);     // the image list keeps its own copy
+                return extension;
+            }
+            catch { return null; }              // no icon is only cosmetic
             finally { icon.Dispose(); }
-            return extension;
         }
 
         // ---------------------- Window placement -----------------------
 
         /// <summary>Restores the size and position saved when the window last closed.</summary>
-        void RestorePlacement()
+        private void RestorePlacement()
         {
             string saved = _history.GetValue(KeyWindow);
             if (saved == null) return;
@@ -1160,17 +1439,15 @@ namespace TwinPix
             if (w < MinimumSize.Width || h < MinimumSize.Height) return;
 
             var bounds = new Rectangle(x, y, w, h);
-            bool onScreen = false;
-            foreach (Screen screen in Screen.AllScreens)
-                if (screen.WorkingArea.IntersectsWith(bounds)) onScreen = true;
-            if (!onScreen) return;           // that monitor is gone: keep the default position
+            if (!Screen.AllScreens.Any(s => s.WorkingArea.IntersectsWith(bounds)))
+                return;                         // that monitor is gone: keep the default position
 
             StartPosition = FormStartPosition.Manual;
             Bounds = bounds;
             if (parts[4] == "1") WindowState = FormWindowState.Maximized;
         }
 
-        void SavePlacement()
+        private void SavePlacement()
         {
             Rectangle b = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
             _history.SetValue(KeyWindow, b.X + "," + b.Y + "," + b.Width + "," + b.Height
@@ -1178,81 +1455,92 @@ namespace TwinPix
         }
 
         // ---------------------- Designer event handlers -----------------
-        //  Thin wrappers: the designer needs a named method per event, and
-        //  the work itself stays in the methods above.
+        //  Wired in MainForm.Designer.cs. Thin wrappers: the designer needs a
+        //  named method per event, and the work itself stays in the methods
+        //  above.
 
-        void BtnRoot_Click(object sender, EventArgs e)
+        private void BtnRoot_Click(object sender, EventArgs e)
         {
             Browse(_cboRoot, "Folder to scan", KeyScan);
         }
 
-        void BtnQuarantine_Click(object sender, EventArgs e)
+        private void BtnQuarantine_Click(object sender, EventArgs e)
         {
             Browse(_cboQuarantine, "Destination folder for duplicates", KeyDestination);
         }
 
-        void BtnScan_Click(object sender, EventArgs e) { StartScan(); }
+        private void BtnScan_Click(object sender, EventArgs e) { StartScan(); }
 
-        void Scan_Click(object sender, EventArgs e) { StartScan(); }
+        private void Scan_Click(object sender, EventArgs e) { StartScan(); }
 
-        void MoveAll_Click(object sender, EventArgs e) { MoveAllDuplicates(); }
+        /// <summary>MOVE ALL - or STOP while files are being moved.</summary>
+        private void MoveAll_Click(object sender, EventArgs e)
+        {
+            if (IsRemoving)
+            {
+                _removalWorker.CancelAsync();
+                _statusLabel.Text = "Stopping after the current file...";
+                return;
+            }
+            RemoveDuplicates();
+        }
 
-        void Export_Click(object sender, EventArgs e) { ExportCsv(); }
+        private void Export_Click(object sender, EventArgs e) { ExportCsv(); }
 
-        void Exit_Click(object sender, EventArgs e) { Close(); }
+        private void Exit_Click(object sender, EventArgs e) { Close(); }
 
-        void MiAbout_Click(object sender, EventArgs e) { ShowAbout(); }
+        private void MiAbout_Click(object sender, EventArgs e) { ShowAbout(); }
 
-        void ClearScanHistory_Click(object sender, EventArgs e)
+        private void ClearScanHistory_Click(object sender, EventArgs e)
         {
             ClearHistory(_cboRoot, KeyScan);
         }
 
-        void ClearDestinationHistory_Click(object sender, EventArgs e)
+        private void ClearDestinationHistory_Click(object sender, EventArgs e)
         {
             ClearHistory(_cboQuarantine, KeyDestination);
         }
 
-        void ChkTrash_CheckedChanged(object sender, EventArgs e) { TrashModeChanged(); }
+        private void ChkTrash_CheckedChanged(object sender, EventArgs e) { TrashModeChanged(); }
 
-        void ChkRecursive_CheckedChanged(object sender, EventArgs e) { ScanOptionChanged(); }
+        private void ChkRecursive_CheckedChanged(object sender, EventArgs e) { ScanOptionChanged(); }
 
-        void CboMatch_SelectedIndexChanged(object sender, EventArgs e) { MatchModeChanged(); }
+        private void CboMatch_SelectedIndexChanged(object sender, EventArgs e) { MatchModeChanged(); }
 
-        void CboSensitivity_SelectedIndexChanged(object sender, EventArgs e) { ScanOptionChanged(); }
+        private void CboSensitivity_SelectedIndexChanged(object sender, EventArgs e) { ScanOptionChanged(); }
 
-        void LvFolders_ItemChecked(object sender, ItemCheckedEventArgs e) { PreferredFolderToggled(e.Item); }
+        private void LvFolders_ItemChecked(object sender, ItemCheckedEventArgs e) { PreferredFolderToggled(e.Item); }
 
-        void ChkKeepPreferred_CheckedChanged(object sender, EventArgs e) { RuleChanged(null); }
+        private void ChkKeepPreferred_CheckedChanged(object sender, EventArgs e) { RuleChanged(null); }
 
-        void ChkKeepOldest_CheckedChanged(object sender, EventArgs e) { RuleChanged(_chkKeepOldest); }
+        private void ChkKeepOldest_CheckedChanged(object sender, EventArgs e) { RuleChanged(_chkKeepOldest); }
 
-        void ChkKeepNewest_CheckedChanged(object sender, EventArgs e) { RuleChanged(_chkKeepNewest); }
+        private void ChkKeepNewest_CheckedChanged(object sender, EventArgs e) { RuleChanged(_chkKeepNewest); }
 
-        void ChkKeepShortest_CheckedChanged(object sender, EventArgs e) { RuleChanged(_chkKeepShortest); }
+        private void ChkKeepShortest_CheckedChanged(object sender, EventArgs e) { RuleChanged(_chkKeepShortest); }
 
-        void ChkKeepBest_CheckedChanged(object sender, EventArgs e) { RuleChanged(_chkKeepBest); }
+        private void ChkKeepBest_CheckedChanged(object sender, EventArgs e) { RuleChanged(_chkKeepBest); }
 
-        void ChkKeepLargest_CheckedChanged(object sender, EventArgs e) { RuleChanged(_chkKeepLargest); }
+        private void ChkKeepLargest_CheckedChanged(object sender, EventArgs e) { RuleChanged(_chkKeepLargest); }
 
-        void MiKeepPreferred_Click(object sender, EventArgs e)
+        private void MiKeepPreferred_Click(object sender, EventArgs e)
         {
             if (_chkKeepPreferred.Enabled)
                 _chkKeepPreferred.Checked = !_chkKeepPreferred.Checked;
         }
 
-        void MiKeepOldest_Click(object sender, EventArgs e) { _chkKeepOldest.Checked = true; }
+        private void MiKeepOldest_Click(object sender, EventArgs e) { _chkKeepOldest.Checked = true; }
 
-        void MiKeepNewest_Click(object sender, EventArgs e) { _chkKeepNewest.Checked = true; }
+        private void MiKeepNewest_Click(object sender, EventArgs e) { _chkKeepNewest.Checked = true; }
 
-        void MiKeepShortest_Click(object sender, EventArgs e) { _chkKeepShortest.Checked = true; }
+        private void MiKeepShortest_Click(object sender, EventArgs e) { _chkKeepShortest.Checked = true; }
 
-        void MiKeepBest_Click(object sender, EventArgs e) { _chkKeepBest.Checked = true; }
+        private void MiKeepBest_Click(object sender, EventArgs e) { _chkKeepBest.Checked = true; }
 
-        void MiKeepLargest_Click(object sender, EventArgs e) { _chkKeepLargest.Checked = true; }
+        private void MiKeepLargest_Click(object sender, EventArgs e) { _chkKeepLargest.Checked = true; }
 
         /// <summary>A click on a header sorts by that column, a second click reverses it.</summary>
-        void Lv_ColumnClick(object sender, ColumnClickEventArgs e)
+        private void Lv_ColumnClick(object sender, ColumnClickEventArgs e)
         {
             if (e.Column == _sortColumn)
             {
@@ -1262,12 +1550,14 @@ namespace TwinPix
             {
                 _sortColumn = e.Column;
                 // text columns read best A to Z, numbers largest first
-                _sortAscending = (e.Column == 0 || e.Column == 1 || e.Column == 5);
+                _sortAscending = e.Column == GroupComparer.ColumnKeptFile
+                              || e.Column == GroupComparer.ColumnExtension
+                              || e.Column == GroupComparer.ColumnKeptIn;
             }
             ApplySort();
         }
 
-        void Lv_SelectedIndexChanged(object sender, EventArgs e)
+        private void Lv_SelectedIndexChanged(object sender, EventArgs e)
         {
             if (_lv.SelectedItems.Count == 0) { _current = null; ClearCards(); return; }
             _current = _lv.SelectedItems[0].Tag as DupGroup;

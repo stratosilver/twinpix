@@ -5,10 +5,17 @@ rem  (csc.exe from the .NET Framework 4.x, present on every Windows 8+
 rem  box and on any Windows 7 with the framework enabled).
 rem  No Visual Studio, no SDK, no download required.
 rem
-rem  Every .cs file next to this script is compiled - the engine
-rem  (TwinPix.cs) and the user interface (MainForm.cs, MainForm.Designer.cs,
-rem  FileCard.cs, FileCard.Designer.cs). TwinPix.csproj builds those very
-rem  same files in Visual Studio; neither build needs the other.
+rem  Every .cs file next to this script is compiled - one class per file,
+rem  listed in the map at the top of TwinPix.cs. The files in tools\ are
+rem  not part of the application. TwinPix.csproj builds those very same
+rem  files in Visual Studio; neither build needs the other.
+rem
+rem  This compiler only knows C# 5 (2012): no interpolated strings, no
+rem  null-conditional operator, no nameof, no expression-bodied members.
+rem  TwinPix.csproj sets LangVersion 5 so that Visual Studio refuses them
+rem  too - see DEVELOPER.md.
+rem
+rem  selftest.bat builds and runs the safety self-test the same way.
 rem
 rem  Every .resx file next to this script is embedded as well, under the
 rem  name the form's ComponentResourceManager asks for at run time

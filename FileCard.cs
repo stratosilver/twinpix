@@ -13,26 +13,41 @@ using System.Windows.Forms;
 
 namespace TwinPix
 {
+    /// <summary>
+    /// The card of one copy. PHP note: "partial" means the class is written in
+    /// several files - this one holds the behaviour, FileCard.Designer.cs the
+    /// controls the form designer generates. The compiler joins them.
+    /// </summary>
     public partial class FileCard : UserControl
     {
-        static readonly Color KeepBack = Color.FromArgb(226, 245, 228);
-        static readonly Color KeepBorder = Color.FromArgb(46, 139, 87);
-        static readonly Color NormalBack = Color.White;
+        private static readonly Color KeepBack = Color.FromArgb(226, 245, 228);
+        private static readonly Color KeepText = Color.FromArgb(46, 139, 87);
+        private static readonly Color NormalBack = Color.White;
 
-        bool _suspend;
+        // The preview is decoded once at this size, then shrunk to fit the card:
+        // big enough for a card on a wide panel.
+        private const int ThumbMaxWidth = 480;
+        private const int ThumbMaxHeight = 326;
 
-        /// <summary>The file this card stands for, or null before Bind().</summary>
-        public FileEntry Entry { get; private set; }
-
-        /// <summary>Raised when this card becomes the one to keep.</summary>
-        public event EventHandler KeepChanged;
+        /// <summary>Set while the code, not the user, changes the Keep button.</summary>
+        private bool _suspend;
 
         public FileCard()
         {
             InitializeComponent();
         }
 
-        /// <summary>Whether this copy is the one marked to keep.</summary>
+        /// <summary>The file this card stands for, or null before Bind().</summary>
+        public FileEntry Entry { get; private set; }
+
+        /// <summary>
+        /// Raised when the user makes this card the one to keep. PHP note: an
+        /// event is a list of callbacks; the window subscribes with
+        /// "card.KeepChanged += CardKeepChanged" and is called back here.
+        /// </summary>
+        public event EventHandler KeepChanged;
+
+        /// <summary>Whether this copy is the one marked to keep. Setting it does not raise KeepChanged.</summary>
         public bool KeepChecked
         {
             get { return _rb.Checked; }
@@ -57,7 +72,7 @@ namespace TwinPix
 
             _lblName.Text = e.FileName;
             _lblDir.Text = e.DirectoryPath;
-            _lblInfo.Text = Util.FormatSize(e.Size)
+            _lblInfo.Text = Format.FileSize(e.Size)
                           + (e.Dimensions.Length > 0 ? "  -  " + e.Dimensions : "")
                           + "  -  " + e.Modified.ToString("yyyy-MM-dd");
 
@@ -67,23 +82,22 @@ namespace TwinPix
             string note = e.InPreferred ? "* preferred folder" : "";
             if (visual)
             {
-                string match = e.Distance == 0 ? "same picture"
-                                               : "differs by " + e.Distance + "/64";
+                string match = e.Distance == 0 ? "same picture" : "differs by " + e.Distance + "/64";
                 note = note.Length > 0 ? note + "  -  " + match : match;
             }
             _lblNote.Text = note;
-            _lblNote.ForeColor = e.InPreferred ? KeepBorder : Color.DimGray;
+            _lblNote.ForeColor = e.InPreferred ? KeepText : Color.DimGray;
             _lblNote.Visible = note.Length > 0;
 
             KeepChecked = e.Keep;
 
             if (tip != null)
             {
-                string tipText = e.FullPath + "\r\n" + Util.FormatSize(e.Size)
-                                 + (e.Dimensions.Length > 0 ? "\r\n" + e.Dimensions + " pixels" : "")
-                                 + "\r\nModified " + e.Modified.ToString("yyyy-MM-dd HH:mm:ss")
-                                 + (string.IsNullOrEmpty(e.Hash) ? "" : "\r\nMD5 " + e.Hash)
-                                 + "\r\n\r\nDouble-click: open the image";
+                string tipText = e.FullPath + "\r\n" + Format.FileSize(e.Size)
+                               + (e.Dimensions.Length > 0 ? "\r\n" + e.Dimensions + " pixels" : "")
+                               + "\r\nModified " + e.Modified.ToString("yyyy-MM-dd HH:mm:ss")
+                               + (string.IsNullOrEmpty(e.Hash) ? "" : "\r\nMD5 " + e.Hash)
+                               + "\r\n\r\nDouble-click: open the image";
                 tip.SetToolTip(_pic, tipText);
                 tip.SetToolTip(_lblName, tipText);
                 tip.SetToolTip(_lblDir, tipText);
@@ -94,21 +108,20 @@ namespace TwinPix
             UpdateStyle();
         }
 
-        // The preview is decoded once at this size, then shrunk to fit the card:
-        // big enough for a card on a wide panel, four to a row.
-        const int ThumbMaxWidth = 480;
-        const int ThumbMaxHeight = 326;
-
-        void LoadThumbnail()
+        private void LoadThumbnail()
         {
             ReleaseThumbnail();
             try
             {
-                _pic.Image = Util.LoadThumb(Entry.FullPath, ThumbMaxWidth, ThumbMaxHeight);
+                _pic.Image = Thumbnail.Load(Entry.FullPath, ThumbMaxWidth, ThumbMaxHeight);
                 UpdatePictureMode();
             }
             catch
             {
+                // Formats GDI+ cannot decode (HEIC, RAW, PSD...) and damaged
+                // files get a caption instead of a preview. The label is created
+                // here rather than in the designer because most cards never
+                // need it.
                 _pic.Image = null;
                 var l = new Label();
                 l.Dock = DockStyle.Fill;
@@ -123,7 +136,7 @@ namespace TwinPix
         /// Shrinks a preview larger than the picture box to fit it; a smaller one
         /// stays at its own size, centred, rather than being blown up blurry.
         /// </summary>
-        void UpdatePictureMode()
+        private void UpdatePictureMode()
         {
             Image img = _pic.Image;
             bool tooBig = img != null && (img.Width > _pic.Width || img.Height > _pic.Height);
@@ -162,61 +175,62 @@ namespace TwinPix
         {
             bool keep = _rb.Checked;
             BackColor = keep ? KeepBack : NormalBack;
-            _lblName.ForeColor = keep ? KeepBorder : SystemColors.ControlText;
-            _rb.ForeColor = keep ? KeepBorder : SystemColors.ControlText;
-            _rb.Font = keep ? Util.UiFontBold : Util.UiFont;
+            _lblName.ForeColor = keep ? KeepText : SystemColors.ControlText;
+            _rb.ForeColor = keep ? KeepText : SystemColors.ControlText;
+            _rb.Font = keep ? UiStyle.UiFontBold : UiStyle.UiFont;
         }
 
         /// <summary>
         /// Frees the preview bitmap. The thumbnail is decoded into memory and the
         /// file closed at once, so nothing must keep the bitmap alive once the
-        /// card is gone.
+        /// card is gone. Called from Dispose() in FileCard.Designer.cs.
         /// </summary>
-        void ReleaseThumbnail()
+        private void ReleaseThumbnail()
         {
             if (_pic == null) return;
             Image img = _pic.Image;
             if (img == null) return;
             _pic.Image = null;
-            try { img.Dispose(); }
-            catch { }
+            img.Dispose();
         }
 
         // ---------------------- Designer event handlers -----------------
+        //  Wired in FileCard.Designer.cs; the designer needs named methods.
 
-        void Rb_CheckedChanged(object sender, EventArgs e)
+        private void Rb_CheckedChanged(object sender, EventArgs e)
         {
             UpdateStyle();
             if (_suspend || !_rb.Checked) return;
             if (Entry != null) Entry.Keep = true;
+            // PHP note: an event with no subscriber is null, hence the check.
             if (KeepChanged != null) KeepChanged(this, EventArgs.Empty);
         }
 
-        void Card_Click(object sender, EventArgs e)
+        private void Card_Click(object sender, EventArgs e)
         {
             _rb.Checked = true;
         }
 
-        void Card_DoubleClick(object sender, EventArgs e)
+        private void Card_DoubleClick(object sender, EventArgs e)
         {
-            if (Entry != null) Util.OpenFile(Entry.FullPath);
+            if (Entry != null) Shell.Open(Entry.FullPath);
         }
 
-        void MiOpen_Click(object sender, EventArgs e)
+        private void MiOpen_Click(object sender, EventArgs e)
         {
-            if (Entry != null) Util.OpenFile(Entry.FullPath);
+            if (Entry != null) Shell.Open(Entry.FullPath);
         }
 
-        void MiFolder_Click(object sender, EventArgs e)
+        private void MiFolder_Click(object sender, EventArgs e)
         {
-            if (Entry != null) Util.ShowInExplorer(Entry.FullPath);
+            if (Entry != null) Shell.ShowInExplorer(Entry.FullPath);
         }
 
-        void MiCopyPath_Click(object sender, EventArgs e)
+        private void MiCopyPath_Click(object sender, EventArgs e)
         {
             if (Entry == null) return;
             try { Clipboard.SetText(Entry.FullPath); }
-            catch { }
+            catch (System.Runtime.InteropServices.ExternalException) { }   // clipboard busy: try again
         }
     }
 }

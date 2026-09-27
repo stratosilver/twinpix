@@ -5,6 +5,7 @@
   It exists so the Windows Forms designer can open MainForm.cs and
   FileCard.cs on the design surface; build.bat still builds the very same
   sources with the compiler shipped with Windows, and needs none of this.
+  A new .cs file must be added below as well (build.bat takes *.cs).
 
   The WIC constant and the three WPF references below are what enable the
   fast image decoder used by visual matching. If those assemblies are not
@@ -27,6 +28,10 @@
     <ApplicationIcon>assets\twinpix.ico</ApplicationIcon>
     <ApplicationManifest>assets\TwinPix.manifest</ApplicationManifest>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <!-- build.bat uses the csc.exe shipped with Windows, which only knows C# 5.
+         Visual Studio is held to the same version, so that code written there
+         always builds with build.bat too. See DEVELOPER.md. -->
+    <LangVersion>5</LangVersion>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
@@ -58,7 +63,39 @@
     <Reference Include="System.Xaml" />
   </ItemGroup>
   <ItemGroup>
+    <!-- One class per file; build.bat compiles the same files as *.cs. See the map in TwinPix.cs. -->
     <Compile Include="TwinPix.cs" />
+    <Compile Include="Program.cs" />
+    <Compile Include="DupGroup.cs" />
+    <Compile Include="DuplicateRemover.cs" />
+    <Compile Include="FileEntry.cs" />
+    <Compile Include="FileIdentity.cs" />
+    <Compile Include="Fingerprint.cs" />
+    <Compile Include="FingerprintCache.cs" />
+    <Compile Include="FolderHistory.cs" />
+    <Compile Include="FolderWalker.cs" />
+    <Compile Include="Format.cs" />
+    <Compile Include="GroupComparer.cs" />
+    <Compile Include="ImageHash.cs" />
+    <Compile Include="KeepRule.cs" />
+    <Compile Include="KeepSelector.cs" />
+    <Compile Include="MatchMode.cs" />
+    <Compile Include="Native.cs" />
+    <Compile Include="NativeMethods.cs" />
+    <Compile Include="PathHelper.cs" />
+    <Compile Include="RecycleBin.cs" />
+    <Compile Include="RemovalItem.cs" />
+    <Compile Include="RemovalJournal.cs" />
+    <Compile Include="RemovalOutcome.cs" />
+    <Compile Include="RemovalSettings.cs" />
+    <Compile Include="ScanOptions.cs" />
+    <Compile Include="ScanResult.cs" />
+    <Compile Include="ScannedFolder.cs" />
+    <Compile Include="Scanner.cs" />
+    <Compile Include="Shell.cs" />
+    <Compile Include="Thumbnail.cs" />
+    <Compile Include="UiStyle.cs" />
+    <Compile Include="VisualMatcher.cs" />
     <Compile Include="MainForm.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -85,7 +122,10 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="build.bat" />
+    <None Include="selftest.bat" />
     <None Include="README.md" />
+    <None Include="DEVELOPER.md" />
+    <None Include="tools\SelfTest.cs" />
     <None Include="assets\TwinPix.manifest" />
     <None Include="tools\ResxToResources.cs" />
   </ItemGroup>
