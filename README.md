@@ -1,6 +1,6 @@
-# TwinPix
+# TwinPix 🏔️🏔️
 
-A Windows application (WinForms, C#) that finds **duplicate images** in a folder
+A very light 300Kb Windows application (WinForms, C#) that finds **duplicate images** in a folder
 and its subfolders — by content, or by what the picture actually looks like —
 shows them side by side with a preview, and lets you pick the one to keep. The
 others are moved to a folder of your choice or to the Recycle Bin, each one
